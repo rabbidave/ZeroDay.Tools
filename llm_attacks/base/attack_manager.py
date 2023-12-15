@@ -45,6 +45,8 @@ def get_embedding_matrix(model):
         return model.model.embed_tokens.weight
     elif isinstance(model, GPTNeoXForCausalLM):
         return model.base_model.embed_in.weight
+    elif isinstance(model, AutoModelForCausalLM):
+        return model.model.embed_tokens.weight
     else:
         raise ValueError(f"Unknown model type: {type(model)}")
 
