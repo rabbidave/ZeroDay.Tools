@@ -28,6 +28,7 @@ class NpEncoder(json.JSONEncoder):
             return obj.tolist()
         return json.JSONEncoder.default(self, obj)
 
+# Note: The following functions follow standard approaches to embeddings (hence similarity to llama), but AutoModelforCausalLM is a generic class, and different models may be instantiated differently; always test/validate
 def get_embedding_layer(model):
     if isinstance(model, GPTJForCausalLM) or isinstance(model, GPT2LMHeadModel):
         return model.transformer.wte
@@ -35,6 +36,8 @@ def get_embedding_layer(model):
         return model.model.embed_tokens
     elif isinstance(model, GPTNeoXForCausalLM):
         return model.base_model.embed_in
+    elif isinstance(model, AutoModelForCausalLM):
+        return model.model.embed_tokens
     else:
         raise ValueError(f"Unknown model type: {type(model)}")
 
@@ -57,9 +60,13 @@ def get_embeddings(model, input_ids):
         return model.model.embed_tokens(input_ids)
     elif isinstance(model, GPTNeoXForCausalLM):
         return model.base_model.embed_in(input_ids).half()
+    elif isinstance(model, AutoModelForCausalLM):
+        return model.model.embed_tokens(input_ids)
     else:
         raise ValueError(f"Unknown model type: {type(model)}")
 
+
+#Note: Currently configured to recognize special tokens (e.g. end/beginning of sentence), but if your model has custom start/stop tokens, different formatting of the context window, or special characters outside ASCII you'll need to update the below function
 def get_nonascii_toks(tokenizer, device='cpu'):
 
     def is_ascii(s):
