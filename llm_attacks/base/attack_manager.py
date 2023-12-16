@@ -30,46 +30,20 @@ class NpEncoder(json.JSONEncoder):
 
 # Note: The following functions follow standard approaches to embeddings (hence similarity to llama), but AutoModelforCausalLM is a generic class, and different models may be instantiated differently; always test/validate
 def get_embedding_layer(model):
-    if isinstance(model, GPTJForCausalLM) or isinstance(model, GPT2LMHeadModel):
-        return model.transformer.wte
-    elif isinstance(model, LlamaForCausalLM):
-        return model.model.embed_tokens
-    elif isinstance(model, GPTNeoXForCausalLM):
-        return model.base_model.embed_in
-    elif isinstance(model, AutoModelForCausalLM):
-        return model.model.embed_tokens
-    if isinstance(model, MistralForCausalLM):
-        return model.embeddings.word_embeddings
+    if hasattr(model.model, "embeddings"):
+        return model.model.embeddings.word_embeddings
+    elif hasattr(model.model, "transformer"):
+        return model.model.transformer.wte
     else:
-        raise ValueError(f"Unknown model type: {type(model)}")
+        raise ValueError(f"Unknown embedding layer structure for model: {type(model)}")
 
 def get_embedding_matrix(model):
-    if isinstance(model, GPTJForCausalLM) or isinstance(model, GPT2LMHeadModel):
-        return model.transformer.wte.weight
-    elif isinstance(model, LlamaForCausalLM):
-        return model.model.embed_tokens.weight
-    elif isinstance(model, GPTNeoXForCausalLM):
-        return model.base_model.embed_in.weight
-    elif isinstance(model, AutoModelForCausalLM):
-        return model.model.embed_tokens.weight
-    elif isinstance(model, MistralForCausalLM):
-        return model.embeddings.word_embeddings
-    else:
-        raise ValueError(f"Unknown model type: {type(model)}")
+    embedding_layer = get_embedding_layer(model)
+    return embedding_layer.weight
 
 def get_embeddings(model, input_ids):
-    if isinstance(model, GPTJForCausalLM) or isinstance(model, GPT2LMHeadModel):
-        return model.transformer.wte(input_ids).half()
-    elif isinstance(model, LlamaForCausalLM):
-        return model.model.embed_tokens(input_ids)
-    elif isinstance(model, GPTNeoXForCausalLM):
-        return model.base_model.embed_in(input_ids).half()
-    elif isinstance(model, AutoModelForCausalLM):
-        return model.model.embed_tokens(input_ids)
-    elif isinstance(model, MistralForCausalLM):
-        return model.embeddings.word_embeddings(input_ids)
-    else:
-        raise ValueError(f"Unknown model type: {type(model)}")
+    embedding_layer = get_embedding_layer(model)
+    return embedding_layer(input_ids)
 
 
 #Note: Currently configured to recognize special tokens (e.g. end/beginning of sentence), but if your model has custom start/stop tokens, different formatting of the context window, or special characters outside ASCII you'll need to update the below function
