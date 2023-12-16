@@ -53,7 +53,7 @@ def get_embedding_matrix(model):
     elif isinstance(model, AutoModelForCausalLM):
         return model.model.embed_tokens.weight
     elif isinstance(model, MistralForCausalLM):
-        return model.transformer.embeddings.word_embeddings.weight
+        return model.embeddings.word_embeddings
     else:
         raise ValueError(f"Unknown model type: {type(model)}")
 
