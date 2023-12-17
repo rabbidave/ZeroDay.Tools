@@ -17,6 +17,9 @@ from transformers import (AutoModelForCausalLM, AutoTokenizer, GPT2LMHeadModel,
                           GPTJForCausalLM, GPTNeoXForCausalLM,
                           LlamaForCausalLM, MistralForCausalLM, PhiForCausalLM)
 
+from auto_gptq import AutoGPTQForCausalLM, BaseQuantizeConfig
+from auto_gptq.modeling import LlamaGPTQForCausalLM
+
 
 class NpEncoder(json.JSONEncoder):
     def default(self, obj):
@@ -42,6 +45,8 @@ def get_embedding_layer(model):
         return model.get_input_embeddings()
     elif isinstance(model, PhiForCausalLM):
         return model.model.embed_tokens
+    elif isinstance(model, LlamaGPTQForCausalLM):
+        return model.model.embed_tokens
     else:
         raise ValueError(f"Unknown model type: {type(model)}")
 
@@ -58,6 +63,8 @@ def get_embedding_matrix(model):
         return model.get_input_embeddings().weight
     elif isinstance(model, PhiForCausalLM):
         return model.get_input_embeddings().weight
+    elif isinstance(model, LlamaGPTQForCausalLM):
+        return model.model.model.embed_tokens.weight
     else:
         raise ValueError(f"Unknown model type: {type(model)}")
 
@@ -74,6 +81,8 @@ def get_embeddings(model, input_ids):
         return model.get_input_embeddings()(input_ids)
     elif isinstance(model, PhiForCausalLM):
         return model.model.embed_tokens(input_ids)
+    elif isinstance(model, LlamaGPTQForCausalLM):
+        return model.model.model.embed_tokens(input_ids)
     else:
         raise ValueError(f"Unknown model type: {type(model)}")
 
