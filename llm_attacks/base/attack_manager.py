@@ -28,7 +28,7 @@ class NpEncoder(json.JSONEncoder):
             return obj.tolist()
         return json.JSONEncoder.default(self, obj)
 
-# Note: The following functions follow standard approaches to embeddings (hence similarity to llama), but AutoModelforCausalLM is a generic class, and different models may be instantiated differently; always test/validate
+# Note: The following functions follow standard approaches to embeddings (hence some having reused methods from llama), but AutoModelforCausalLM is a generic class, and different models may be instantiated differently; always test/validate
 def get_embedding_layer(model):
     if isinstance(model, GPTJForCausalLM) or isinstance(model, GPT2LMHeadModel):
         return model.transformer.wte
@@ -57,7 +57,7 @@ def get_embedding_matrix(model):
     elif isinstance(model, MistralForCausalLM):
         return model.get_input_embeddings().weight
     elif isinstance(model, PhiForCausalLM):
-        return model.model.embed_tokens.weight
+        return model.get_input_embeddings().weight
     else:
         raise ValueError(f"Unknown model type: {type(model)}")
 
