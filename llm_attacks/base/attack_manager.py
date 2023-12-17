@@ -40,6 +40,8 @@ def get_embedding_layer(model):
         return model.model.embed_tokens
     elif isinstance(model, MistralForCausalLM):
         return model.get_input_embeddings()
+    elif isinstance(model, PhiForCausalLM):
+        return model.model.embed_tokens
     else:
         raise ValueError(f"Unknown model type: {type(model)}")
 
@@ -54,6 +56,8 @@ def get_embedding_matrix(model):
         return model.model.embed_tokens.weight
     elif isinstance(model, MistralForCausalLM):
         return model.get_input_embeddings().weight
+    elif isinstance(model, PhiForCausalLM):
+        return model.model.embed_tokens.weight
     else:
         raise ValueError(f"Unknown model type: {type(model)}")
 
@@ -68,6 +72,8 @@ def get_embeddings(model, input_ids):
         return model.model.embed_tokens(input_ids)
     elif isinstance(model, MistralForCausalLM):
         return model.get_input_embeddings()(input_ids)
+    elif isinstance(model, PhiForCausalLM):
+        return model.model.embed_tokens(input_ids)
     else:
         raise ValueError(f"Unknown model type: {type(model)}")
 
