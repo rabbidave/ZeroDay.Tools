@@ -15,7 +15,7 @@ import torch.nn.functional as F
 from fastchat.model import get_conversation_template
 from transformers import (AutoModelForCausalLM, AutoTokenizer, GPT2LMHeadModel,
                           GPTJForCausalLM, GPTNeoXForCausalLM,
-                          LlamaForCausalLM, MistralForCausalLM)
+                          LlamaForCausalLM, MistralForCausalLM, PhiForCausalLM)
 
 
 class NpEncoder(json.JSONEncoder):
