@@ -265,7 +265,7 @@ class AttackPrompt(object):
             print('WARNING: max_new_tokens > 32 may cause testing to slow down.')
         input_ids = self.input_ids[:self._assistant_role_slice.stop].to(model.device).unsqueeze(0)
         attn_masks = torch.ones_like(input_ids).to(model.device)
-        output_ids = model.generate(input_ids, 
+        output_ids = model.generate(inputs=input_ids, 
                                     attention_mask=attn_masks, 
                                     generation_config=gen_config,
                                     pad_token_id=self.tokenizer.pad_token_id)[0]
@@ -1472,12 +1472,24 @@ class EvaluateAttack(object):
 class ModelWorker(object):
 
     def __init__(self, model_path, model_kwargs, tokenizer, conv_template, device):
-        self.model = AutoModelForCausalLM.from_pretrained(
-            model_path,
-            torch_dtype=torch.float16,
-            trust_remote_code=True,
-            **model_kwargs
-        ).to(device).eval()
+        # Check if 'GPTQ' is in the model path
+        if 'GPTQ' in model_path:
+            # Use AutoGPTQForCausalLM for models with 'GPTQ' in their path
+            self.model = AutoGPTQForCausalLM.from_pretrained(
+                model_path,
+                torch_dtype=torch.float16,
+                trust_remote_code=True,
+                **model_kwargs
+            ).to(device).eval()
+        else:
+            # Use AutoModelForCausalLM for other models
+            self.model = AutoModelForCausalLM.from_pretrained(
+                model_path,
+                torch_dtype=torch.float16,
+                trust_remote_code=True,
+                **model_kwargs
+            ).to(device).eval()
+
         self.tokenizer = tokenizer
         self.conv_template = conv_template
         self.tasks = mp.JoinableQueue()
