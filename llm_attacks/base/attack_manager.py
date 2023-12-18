@@ -1481,7 +1481,7 @@ class ModelWorker(object):
     # Check if 'Mixtral' is in the model path
     if 'Mixtral' in model_path:
         # Use MixtralForCausalLM for models with 'Mixtral' in their path
-        self.model = MixtralForCausalLM.from_pretrained(
+        self.model = AutoModelForCausalLM.from_pretrained(
             model_path,
             torch_dtype=torch.float16,
             trust_remote_code=True,
@@ -1489,7 +1489,7 @@ class ModelWorker(object):
         ).to(device).eval()
 
         # Assuming LlamaTokenizer is the right tokenizer for Mixtral
-        self.tokenizer = LlamaTokenizer.from_pretrained(model_path)
+        self.tokenizer = AutoTokenizer.from_pretrained(model_path)
     elif 'GPTQ' in model_path:
         # Use AutoGPTQForCausalLM for models with 'GPTQ' in their path
         self.model = AutoGPTQForCausalLM.from_pretrained(
