@@ -1496,7 +1496,6 @@ class ModelWorker(object):
                 trust_remote_code=True,
                 **model_kwargs
             ).to(device).eval()
-            
 
             self.tokenizer = AutoTokenizer
 
@@ -1504,6 +1503,7 @@ class ModelWorker(object):
         self.tasks = mp.JoinableQueue()
         self.results = mp.JoinableQueue()
         self.process = None
+
 
     
     @staticmethod
