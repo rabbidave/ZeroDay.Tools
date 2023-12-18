@@ -1478,29 +1478,44 @@ class EvaluateAttack(object):
 class ModelWorker(object):
 
     def __init__(self, model_path, model_kwargs, tokenizer, conv_template, device):
-        # Check if 'GPTQ' is in the model path
-        if 'GPTQ' in model_path:
-            # Use AutoGPTQForCausalLM for models with 'GPTQ' in their path
-            self.model = AutoGPTQForCausalLM.from_pretrained(
-                model_path,
-                torch_dtype=torch.float16,
-                trust_remote_code=True,
-                **model_kwargs
-            ).to(device).eval()
-        else:
-            # Use AutoModelForCausalLM for other models
-            self.model = AutoModelForCausalLM.from_pretrained(
-                model_path,
-                torch_dtype=torch.float16,
-                trust_remote_code=True,
-                **model_kwargs
-            ).to(device).eval()
+    # Check if 'Mixtral' is in the model path
+    if 'Mixtral' in model_path:
+        # Use MixtralForCausalLM for models with 'Mixtral' in their path
+        self.model = MixtralForCausalLM.from_pretrained(
+            model_path,
+            torch_dtype=torch.float16,
+            trust_remote_code=True,
+            **model_kwargs
+        ).to(device).eval()
+
+        # Assuming LlamaTokenizer is the right tokenizer for Mixtral
+        self.tokenizer = LlamaTokenizer.from_pretrained(model_path)
+    elif 'GPTQ' in model_path:
+        # Use AutoGPTQForCausalLM for models with 'GPTQ' in their path
+        self.model = AutoGPTQForCausalLM.from_pretrained(
+            model_path,
+            torch_dtype=torch.float16,
+            trust_remote_code=True,
+            **model_kwargs
+        ).to(device).eval()
+
+        self.tokenizer = tokenizer  # Assuming the tokenizer is passed correctly
+    else:
+        # Use AutoModelForCausalLM for other models
+        self.model = AutoModelForCausalLM.from_pretrained(
+            model_path,
+            torch_dtype=torch.float16,
+            trust_remote_code=True,
+            **model_kwargs
+        ).to(device).eval()
 
         self.tokenizer = tokenizer
-        self.conv_template = conv_template
-        self.tasks = mp.JoinableQueue()
-        self.results = mp.JoinableQueue()
-        self.process = None
+
+    self.conv_template = conv_template
+    self.tasks = mp.JoinableQueue()
+    self.results = mp.JoinableQueue()
+    self.process = None
+
     
     @staticmethod
     def run(model, tasks, results):
