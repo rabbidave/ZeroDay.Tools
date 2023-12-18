@@ -1497,7 +1497,7 @@ class ModelWorker(object):
             **model_kwargs
         ).to(device).eval()
 
-        self.tokenizer = tokenizer
+        self.tokenizer = AutoTokenizer
 
     self.conv_template = conv_template
     self.tasks = mp.JoinableQueue()
