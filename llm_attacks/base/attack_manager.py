@@ -1478,31 +1478,32 @@ class EvaluateAttack(object):
 class ModelWorker(object):
 
     def __init__(self, model_path, model_kwargs, tokenizer, conv_template, device):
-    if 'GPTQ' in model_path:
-        # Use AutoGPTQForCausalLM for models with 'GPTQ' in their path
-        self.model = AutoGPTQForCausalLM.from_pretrained(
-            model_path,
-            torch_dtype=torch.float16,
-            trust_remote_code=True,
-            **model_kwargs
-        ).to(device).eval()
+        if 'GPTQ' in model_path:
+            # Use AutoGPTQForCausalLM for models with 'GPTQ' in their path
+            self.model = AutoGPTQForCausalLM.from_pretrained(
+                model_path,
+                torch_dtype=torch.float16,
+                trust_remote_code=True,
+                **model_kwargs
+            ).to(device).eval()
 
-        self.tokenizer = AutoTokenizer  # Assuming the tokenizer is passed correctly
-    else:
-        # Use AutoModelForCausalLM for other models
-        self.model = AutoModelForCausalLM.from_pretrained(
-            model_path,
-            torch_dtype=torch.float16,
-            trust_remote_code=True,
-            **model_kwargs
-        ).to(device).eval()
+            self.tokenizer = AutoTokenizer  # Assuming the tokenizer is passed correctly
+        else:
+            # Use AutoModelForCausalLM for other models
+            self.model = AutoModelForCausalLM.from_pretrained(
+                model_path,
+                torch_dtype=torch.float16,
+                trust_remote_code=True,
+                **model_kwargs
+            ).to(device).eval()
+            
 
-        self.tokenizer = AutoTokenizer
+            self.tokenizer = AutoTokenizer
 
-    self.conv_template = conv_template
-    self.tasks = mp.JoinableQueue()
-    self.results = mp.JoinableQueue()
-    self.process = None
+        self.conv_template = conv_template
+        self.tasks = mp.JoinableQueue()
+        self.results = mp.JoinableQueue()
+        self.process = None
 
     
     @staticmethod
