@@ -1478,19 +1478,7 @@ class EvaluateAttack(object):
 class ModelWorker(object):
 
     def __init__(self, model_path, model_kwargs, tokenizer, conv_template, device):
-    # Check if 'Mixtral' is in the model path
-    if 'Mixtral' in model_path:
-        # Use MixtralForCausalLM for models with 'Mixtral' in their path
-        self.model = AutoModelForCausalLM.from_pretrained(
-            model_path,
-            torch_dtype=torch.float16,
-            trust_remote_code=True,
-            **model_kwargs
-        ).to(device).eval()
-
-        # Assuming LlamaTokenizer is the right tokenizer for Mixtral
-        self.tokenizer = AutoTokenizer.from_pretrained(model_path)
-    elif 'GPTQ' in model_path:
+    if 'GPTQ' in model_path:
         # Use AutoGPTQForCausalLM for models with 'GPTQ' in their path
         self.model = AutoGPTQForCausalLM.from_pretrained(
             model_path,
@@ -1499,17 +1487,7 @@ class ModelWorker(object):
             **model_kwargs
         ).to(device).eval()
 
-        self.tokenizer = tokenizer  # Assuming the tokenizer is passed correctly
-    elif 'Phi' in model_path:
-        # Use PhiForCausalLM for models with 'Phi' in their path
-        self.model = PhiForCausalLM.from_pretrained(
-            model_path,
-            torch_dtype=torch.float16,
-            trust_remote_code=True,
-            **model_kwargs
-        ).to(device).eval()
-
-        self.tokenizer = tokenizer  # Assuming the tokenizer is passed correctly
+        self.tokenizer = AutoTokenizer  # Assuming the tokenizer is passed correctly
     else:
         # Use AutoModelForCausalLM for other models
         self.model = AutoModelForCausalLM.from_pretrained(
