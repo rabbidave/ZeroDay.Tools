@@ -1500,6 +1500,16 @@ class ModelWorker(object):
         ).to(device).eval()
 
         self.tokenizer = tokenizer  # Assuming the tokenizer is passed correctly
+    elif 'Phi' in model_path:
+        # Use PhiForCausalLM for models with 'Phi' in their path
+        self.model = PhiForCausalLM.from_pretrained(
+            model_path,
+            torch_dtype=torch.float16,
+            trust_remote_code=True,
+            **model_kwargs
+        ).to(device).eval()
+
+        self.tokenizer = tokenizer  # Assuming the tokenizer is passed correctly
     else:
         # Use AutoModelForCausalLM for other models
         self.model = AutoModelForCausalLM.from_pretrained(
