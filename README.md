@@ -2,7 +2,7 @@
 
 ## How it works:
 
-![Alt Text](https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExd3ZyZWNxdDdodDQwNmx5NGRhOXZ5aTVqZmN3OXJlbG9mejk2bzdlMCZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/FH4XtAdP7eKmo0YeRD/giphy.gif)
+![Alt Text](https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExZXRvNWlqZWhiYmFrbmp3a2RsOTZmdTQ5YmY0ZnU1OGIyNW8wYmVobSZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/K0UZJibCsa6Ty0CIyI/source.gif)
 
 Per-Model Templates for generation of Adversarial Strings in support of net-new attack methods via Greedy Coordinate Gradient optimization of target input/outputs
 
