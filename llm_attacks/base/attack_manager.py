@@ -46,7 +46,7 @@ def get_embedding_layer(model):
     elif isinstance(model, MixtralForCausalLM):
         return model.get_input_embeddings()
     elif isinstance(model, PhiForCausalLM):
-        return model.model.embed_tokens
+        return model.model.wte
     elif isinstance(model, LlamaGPTQForCausalLM):
         return model.model.embed_tokens
     else:
@@ -66,7 +66,7 @@ def get_embedding_matrix(model):
     elif isinstance(model, MixtralForCausalLM):
         return model.get_input_embeddings().weight
     elif isinstance(model, PhiForCausalLM):
-        return model.get_input_embeddings().weight
+        return model.wte.weight
     elif isinstance(model, LlamaGPTQForCausalLM):
         return model.model.model.embed_tokens.weight
     else:
@@ -86,7 +86,7 @@ def get_embeddings(model, input_ids):
     elif isinstance(model, MixtralForCausalLM):
         return model.get_input_embeddings()(input_ids)
     elif isinstance(model, PhiForCausalLM):
-        return model.model.embed_tokens(input_ids)
+        return model.wte(input_ids)
     elif isinstance(model, LlamaGPTQForCausalLM):
         return model.model.model.embed_tokens(input_ids)
     else:
