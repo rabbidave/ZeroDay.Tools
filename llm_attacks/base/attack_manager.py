@@ -46,7 +46,7 @@ def get_embedding_layer(model):
     elif isinstance(model, MixtralForCausalLM):
         return model.get_input_embeddings()
     elif isinstance(model, PhiForCausalLM):
-        return model.model.embed_tokens
+        return model.get_input_embeddings()
     elif isinstance(model, LlamaGPTQForCausalLM):
         return model.model.embed_tokens
     else:
@@ -86,7 +86,7 @@ def get_embeddings(model, input_ids):
     elif isinstance(model, MixtralForCausalLM):
         return model.get_input_embeddings()(input_ids)
     elif isinstance(model, PhiForCausalLM):
-        return model.model.embed_tokens(input_ids)
+        return model.get_input_embeddings()(input_ids)
     elif isinstance(model, LlamaGPTQForCausalLM):
         return model.model.model.embed_tokens(input_ids)
     else:
@@ -1486,23 +1486,23 @@ class ModelWorker(object):
                 trust_remote_code=True,
                 **model_kwargs
             ).to(device).eval()
-
             self.tokenizer = AutoTokenizer  # Assuming the tokenizer is passed correctly
+
         else:
-            # Use AutoModelForCausalLM for other models
+            # Default to AutoModelForCausalLM for all other models
             self.model = AutoModelForCausalLM.from_pretrained(
                 model_path,
                 torch_dtype=torch.float16,
                 trust_remote_code=True,
                 **model_kwargs
             ).to(device).eval()
-
             self.tokenizer = AutoTokenizer
 
         self.conv_template = conv_template
         self.tasks = mp.JoinableQueue()
         self.results = mp.JoinableQueue()
         self.process = None
+
 
 
     
