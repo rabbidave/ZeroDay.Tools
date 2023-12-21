@@ -1488,7 +1488,7 @@ class ModelWorker(object):
             ).to(device).eval()
 
             self.tokenizer = AutoTokenizer  # Assuming the tokenizer is passed correctly
-        else:
+        elif:
             # Use AutoModelForCausalLM for other models
             self.model = AutoModelForCausalLM.from_pretrained(
                 model_path,
