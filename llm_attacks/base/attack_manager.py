@@ -1488,25 +1488,15 @@ class ModelWorker(object):
             ).to(device).eval()
             self.tokenizer = AutoTokenizer  # Assuming the tokenizer is passed correctly
 
-        elif 'Mixtral' in model_path:
-            # Use MixtralForCausalLM for models with 'Mixtral' in their path
-            self.model = MixtralForCausalLM.from_pretrained(
-                model_path,
-                torch_dtype=torch.float16,
-                trust_remote_code=True,
-                **model_kwargs
-            ).to(device).eval()
-            self.tokenizer = AutoTokenizer
-
-        elif 'phi' in model_path or 'Phi' in model_path:
-            # Use a specific model for models with 'phi' or 'Phi' in their path
-            self.model = AutoModelForCausalLM.from_pretrained(
-                model_path,
-                torch_dtype=torch.float16,
-                trust_remote_code=True,
-                **model_kwargs
-            ).to(device).eval()
-            self.tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+#        elif 'Mixtral' in model_path:
+#            # Use MixtralForCausalLM for models with 'Mixtral' in their path
+#             self.model = MixtralForCausalLM.from_pretrained(
+#                 model_path,
+#                 torch_dtype=torch.float16,
+#                 trust_remote_code=True,
+#                 **model_kwargs
+#             ).to(device).eval()
+#             self.tokenizer = AutoTokenizer
 
         else:
             # Default to AutoModelForCausalLM for all other models
