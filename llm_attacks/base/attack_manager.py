@@ -1488,7 +1488,7 @@ class ModelWorker(object):
             ).to(device).eval()
 
             self.tokenizer = AutoTokenizer  # Assuming the tokenizer is passed correctly
-        else:
+        elif:
             # Use AutoModelForCausalLM for other models
             self.model = AutoModelForCausalLM.from_pretrained(
                 model_path,
@@ -1507,16 +1507,16 @@ class ModelWorker(object):
             ).to(device).eval()
 
             self.tokenizer = AutoTokenizer
-        elif 'phi' in model_path or 'Phi' in model_path:
+        else 'phi' in model_path or 'Phi' in model_path:
             self.model = AutoModelForCausalLM.from_pretrained(
                 model_path,
-                torch_dtype=torch.float16 if device.startswith('cuda') else torch.float32,  # Adjust dtype based on device
+                torch_dtype=torch.float16,
                 trust_remote_code=True,
                 **model_kwargs
             ).to(device).eval()
 
             self.tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
-                       
+
         self.conv_template = conv_template
         self.tasks = mp.JoinableQueue()
         self.results = mp.JoinableQueue()
