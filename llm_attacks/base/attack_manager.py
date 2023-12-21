@@ -46,7 +46,7 @@ def get_embedding_layer(model):
     elif isinstance(model, MixtralForCausalLM):
         return model.get_input_embeddings()
     elif isinstance(model, PhiForCausalLM):
-        return model.model.wte
+        return model.wte
     elif isinstance(model, LlamaGPTQForCausalLM):
         return model.model.embed_tokens
     else:
