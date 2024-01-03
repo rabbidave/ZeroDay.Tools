@@ -6,34 +6,39 @@ The following summarize the key exposures and core dependencies of each attack; 
 
 Download the [Observability Powerpoint](https://github.com/rabbidave/Enterprise-Executive-Summaries/blob/main/Observability.pptx) for context
 
-### Optimization-Free Attacks
+<details>
+  <summary>Gen AI Hardening Checklist (Click to Expand)</summary>
+
+### [Optimization-Free Attacks](https://github.com/rabbidave/ZeroDay.Tools#optimization-free-attack-details)
 Key Exposure: Brand Reputation Damage & Performance Degradation
 
 Dependency: Requires specific API fields; no pre-processing
-### Pre-Processed Attacks
+### [Pre-Processed Attacks](https://github.com/rabbidave/ZeroDay.Tools#pre-processed-attack-details)
 Key Exposure: Data Loss via Exploitation of Distributed Systems making API calls
 
 Dependency: Requires a [localized target](https://huggingface.co/docs/huggingface_hub/main/en/package_reference/hf_file_system); [universal & transferable](https://llm-attacks.org/)
-### System Context Extraction
+### [System Context Extraction](https://github.com/rabbidave/ZeroDay.Tools#system-context-extraction-details)
 Key Exposure: Documentation & Distribution of System Vulnerabilities; Non-Compliance with AI Governance Standards
 
 Dependency: Requires API Access over time; [‘time-based blind SQL injection’](https://owasp.org/www-community/attacks/Blind_SQL_Injection) for [Multimodal Models](https://arxiv.org/pdf/2307.08715v2.pdf)
-### Model Context Extraction
+### [Model Context Extraction](https://github.com/rabbidave/ZeroDay.Tools#model-context-extraction-details)
 Key Exposure: Documentation & Distribution of Model-Specific Vulnerabilities
 
 Dependency: API Access for context window retrieval; VectorDB Access for [decoding embeddings](https://github.com/jxmorris12/vec2text)
-### Training Data Extraction
+### [Training Data Extraction](https://github.com/rabbidave/ZeroDay.Tools#training-data-extraction-details)
 Key Exposure: Legal Liability from Data Licensure Breaches; Non-Compliance with AI Governance Standards
 
 Dependency: Requires API Access over time; ‘rules’ defeated via prior system and model context extraction paired with optimized attacks
-### Supply Chain & Data Poisoning
+### [Supply Chain & Data Poisoning](https://github.com/rabbidave/ZeroDay.Tools#supply-chain--data-poisoning-details)
 Key Exposure: Brand Reputation Damage & Performance Degradation; Non-Compliance with AI Governance Standards, especially for [“high-risk systems”](https://cset.georgetown.edu/article/the-eu-ai-act-a-primer/)
 
 Dependency: Target use of compromised data & models; integration of those vulnerabilities with CI/CD systems
-### Model-Specific Vulnerabilities
+### [Model-Specific Vulnerabilities](https://github.com/rabbidave/ZeroDay.Tools#model-specific-vulnerability-details)
 Key Exposure: Documentation & Distribution of System Vulnerabilities; Brand Reputation Damage & Performance Degradation
 
 Dependency: Lack of Active Assessment of Sensitive or External Systems
+
+</details>
 
 ## Vulnerability Visualizations
 
