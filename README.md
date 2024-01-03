@@ -63,7 +63,7 @@ Takeaway: [Mitigate low-complexity priming attacks](https://llmpriming.focallab.
 #### Pre-Processed Attack Details
 Key Exposure: Data Loss via Exploitation of Distributed Systems making API calls
 
-Dependency: Requires [localized target](https://huggingface.co/docs/huggingface_hub/main/en/package_reference/hf_file_system)]; [universal & transferable](https://llm-attacks.org/)
+Dependency: Requires [localized target](https://huggingface.co/docs/huggingface_hub/main/en/package_reference/hf_file_system); [universal & transferable](https://llm-attacks.org/)
 
 Takeaway: [Defeat pre-processed optimization attacks](https://www.latentspace.tools/) by pre-defining unwanted behaviors, actively monitoring for similar behavior, as well as utilizing windowed evaluation of input/output embeddings against application-specific baselines
 
