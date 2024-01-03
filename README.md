@@ -13,7 +13,7 @@ Dependency: Requires specific API fields; no pre-processing
 ### Pre-Processed Attacks
 Key Exposure: Data Loss via Exploitation of Distributed Systems making API calls
 
-Dependency: Requires [localized target](https://huggingface.co/docs/huggingface_hub/main/en/package_reference/hf_file_system); [universal & transferable](https://llm-attacks.org/)
+Dependency: Requires a [localized target](https://huggingface.co/docs/huggingface_hub/main/en/package_reference/hf_file_system); [universal & transferable](https://llm-attacks.org/)
 ### System Context Extraction
 Key Exposure: Documentation & Distribution of System Vulnerabilities; Non-Compliance with AI Governance Standards
 
