@@ -16,7 +16,7 @@ Dependency: Requires specific API fields; no pre-processing
 ### [Pre-Processed Attacks](https://github.com/rabbidave/ZeroDay.Tools#pre-processed-attack-details)
 Key Exposure: Data Loss via Exploitation of Distributed Systems making API calls
 
-Dependency: Requires a [localized target](https://huggingface.co/docs/huggingface_hub/main/en/package_reference/hf_file_system); [universal & transferable](https://llm-attacks.org/)
+Dependency: Requires [localized target](https://huggingface.co/docs/huggingface_hub/main/en/package_reference/hf_file_system) of either [Language Models](https://llm-attacks.org/) or [Mutlimodal Models](https://github.com/Zoky-2020/SGA)
 ### [System Context Extraction](https://github.com/rabbidave/ZeroDay.Tools#system-context-extraction-details)
 Key Exposure: Documentation & Distribution of System Vulnerabilities; Non-Compliance with AI Governance Standards
 
@@ -57,6 +57,9 @@ e.g. Unauthorized IAM Actions, Internal Database Access, etc
 #### -Membership & Attribute Inference Attack definition for [open-source](https://arxiv.org/pdf/2311.17035.pdf#subsection.5.2), [semi-closed](https://arxiv.org/pdf/2311.17035.pdf), and [closed-source](https://arxiv.org/pdf/2311.17035.pdf#subsection.5.2) models via [targetting of behavior](https://arxiv.org/pdf/2311.17035.pdf#subsection.5.1) that elicit [high-precision recall of underlying training data](https://arxiv.org/pdf/2311.17035.pdf#subsection.5.7); for use in validation of [GDPR-compliant data deletion](https://gdpr-info.eu/art-17-gdpr/) ([alongside layer validation](https://weightwatcher.ai/)), Red/Blue Teaming of [LLM Architectures & Monitoring](https://www.latentspace.tools/), etc
 
 ## Detailed Vulnerability Remediation
+
+<details>
+  <summary>Vulnerability Details & Takeaways (Click to Expand)</summary>
 
 #### Optimization-Free Attack Details
 Dependency: Requires specific API fields; no pre-processing
@@ -111,6 +114,8 @@ Dependency: Lack of Active Assessment of Sensitive or External Systems
 Key Exposure: Documentation & Distribution of System Vulnerabilities; Brand Reputation Damage & Performance Degradation
 
 Takeaway: Utilize a [Defense in Depth](https://en.wikipedia.org/wiki/Defense_in_depth_(computing)) approach (e.g. [Purple Teaming](https://www.splunk.com/en_us/blog/learn/purple-team.html)), especially for Auto Regressive Models, while staying up to date on the latest [attack & defense paradigms](https://owasp.org/www-project-top-10-for-large-language-model-applications/); utilize open-source [code-generation](https://ai.meta.com/llama/purple-llama/#cybersecurity) and [vulnerability](https://github.com/cleverhans-lab/cleverhans) assesment frameworks, [contribute to the community](https://www.zeroday.tools/), etc.
+
+</details>
 
 
 ### Changelog from [LLM-Attacks](https://github.com/llm-attacks/llm-attacks) base repo:
