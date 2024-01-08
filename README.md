@@ -1,5 +1,9 @@
 # [ZeroDay.Tools](https://www.zeroday.tools/): Gen AI Hardening x Attack Suite
 
+This repo serves as an Up-to-Date Text-Based Attack Suite and Gen AI System Hardening Framework; incorporating links to other open-source resources and in-line citations.
+
+This work is predicated on the [universal and transferable nature](https://llm-attacks.org/) of attacks against Auto-Regressive models, the [conserved efficiency of text-based attack modalities](https://arxiv.org/pdf/2307.14061v1.pdf) (see: Figure 3) even for mutlimodal models, and the [non-trivial nature of hardening GenAI systems](https://www.latentspace.tools/).
+
 ## Gen AI Hardening Checklist 
 
 The following summarize the key exposures and core dependencies of each attack; follow the links to the relevant section for takeaways, mitigation, and in-line citations
@@ -120,10 +124,10 @@ Takeaway: Utilize a [Defense in Depth](https://en.wikipedia.org/wiki/Defense_in_
 
 ### Changelog from [LLM-Attacks](https://github.com/llm-attacks/llm-attacks) base repo:
 
--Updated [embedding functions](https://github.com/rabbidave/LLM-Attacks-v2/blob/main/llm_attacks/base/attack_manager.py#L35) within attack_manager.py to support multiple new model classes (e.g. Mi(s/x)tralForCausalLM, PhiForCausalLM, etc)
+-Updated [embedding functions](https://github.com/rabbidave/LLM-Attacks-v2/blob/main/llm_attacks/base/attack_manager.py#L35) within attack_manager.py to support multiple new model classes (e.g. Mi(s/x)tralForCausalLM, AutoGPTQForCausalLM, etc)
 
 -Added [conditional logic](https://github.com/rabbidave/LLM-Attacks-v2/blob/main/llm_attacks/base/attack_manager.py#L1480) to the ModelWorker init inside attack_manager.py allowing for the loading of quantized models based on presence of "GPTQ" in the model path (e.g. GPTQ versions of Mixtral)
 
--Automated and Parameterized the [original demo.py](https://github.com/rabbidave/LLM-Attacks-v2/blob/main/demo.ipynb) into an extensible attack framework allowing for [localization via HF FS API](https://huggingface.co/docs/huggingface_hub/main/en/guides/hf_file_system), definition of target input/outputs w/ test criteria via externalization to environment variables, logging of those prompts/adversarial strings for utilization later, as well as integration with CI/CD pipelines
+-Automated and Parameterized the [original demo.py](https://github.com/rabbidave/LLM-Attacks-v2/blob/main/demo.ipynb) into an extensible attack framework allowing for parm'd localization and configuration, iteration over defined target input/outputs w/ test criteria, logging of those prompts/adversarial strings to a standardized JSON format for later utilization, etc
 
 Note: For details on the updated attack scripts [contact me directly](https://www.linkedin.com/in/davidisaacpierce/); trying to balance awareness of a non-patchable vulnerability against responsible open-source contributions. These attacks seem to work against any auto-regressive sequence model irrespective of architecture; including multimodal models
