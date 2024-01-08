@@ -14,9 +14,9 @@ Key Exposure: Brand Reputation Damage & Performance Degradation
 
 Dependency: Requires [specific API fields](https://cookbook.openai.com/examples/using_logprobs); no pre-processing
 ### [Pre-Processed Attacks](https://github.com/rabbidave/ZeroDay.Tools#pre-processed-attack-details)
-Key Exposure: Data Loss via Exploitation of Distributed Systems making API calls
+Key Exposure: Data Loss via Exploitation of Distributed Systems
 
-Dependency: Whitebox Attacks require [a localized target](https://huggingface.co/docs/huggingface_hub/main/en/package_reference/hf_file_system) of either [Language Models](https://llm-attacks.org/) or [Mutlimodal Models](https://github.com/ericyinyzy/VLAttack); multiple frameworks (e.g. [SGA](https://github.com/Zoky-2020/SGA), [VLAttack](https://github.com/ericyinyzy/VLAttack), etc) support Transferable Blackbox Attacks
+Dependency: Whitebox Attacks require [a localized target](https://huggingface.co/docs/huggingface_hub/main/en/package_reference/hf_file_system) of either [Language Models](https://llm-attacks.org/) or [Mutlimodal Models](https://huggingface.co/liuhaotian/llava-v1.5-13b); multiple frameworks (e.g. [SGA](https://github.com/Zoky-2020/SGA), [VLAttack](https://github.com/ericyinyzy/VLAttack), etc) also designed to enable Transferable Multimodal Blackbox Attacks
 ### [System Context Extraction](https://github.com/rabbidave/ZeroDay.Tools#system-context-extraction-details)
 Key Exposure: Documentation & Distribution of System Vulnerabilities; Non-Compliance with AI Governance Standards
 
@@ -69,9 +69,9 @@ Key Exposure: Brand Reputation Damage & Performance Degradation
 Takeaway: [Mitigate low-complexity priming attacks](https://llmpriming.focallab.org/) via [evaluation of input/output embeddings](https://www.latentspace.tools/#h.de5k8d8cxz8c) against moving windows of time, as well as limits on what data is available via API (e.g. [Next-Token Probabilities aka Logits](https://cookbook.openai.com/examples/using_logprobs)); also mitigates DDoS attacks and indicates instances of poor generalization
 
 #### Pre-Processed Attack Details
-Key Exposure: Data Loss via Exploitation of Distributed Systems making API calls
+Key Exposure: Data Loss via Exploitation of Distributed Systems
 
-Dependency: Whitebox Attacks require [a localized target](https://huggingface.co/docs/huggingface_hub/main/en/package_reference/hf_file_system) of either [Language Models](https://llm-attacks.org/) or [Mutlimodal Models](https://github.com/ericyinyzy/VLAttack); multiple frameworks (e.g. [SGA](https://github.com/Zoky-2020/SGA), [VLAttack](https://github.com/ericyinyzy/VLAttack), etc) support Transferable Blackbox Attacks
+Dependency: Whitebox Attacks require [a localized target](https://huggingface.co/docs/huggingface_hub/main/en/package_reference/hf_file_system) of either [Language Models](https://llm-attacks.org/) or [Mutlimodal Models](https://huggingface.co/liuhaotian/llava-v1.5-13b); multiple frameworks (e.g. [SGA](https://github.com/Zoky-2020/SGA), [VLAttack](https://github.com/ericyinyzy/VLAttack), etc) also designed to enable Transferable Multimodal Blackbox Attacks
 
 Takeaway: [Defeat pre-processed optimization attacks](https://www.latentspace.tools/) by pre-defining embeddings for 'good' and 'bad' examples, logging, [clustering, and flagging of non-conforming entries](https://www.latentspace.tools/#h.lwa4hv3scloi) pre-output generation, as well as utilizing windowed evaluation of input/output embeddings against application-specific baselines
 
