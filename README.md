@@ -2,7 +2,11 @@
 
 This repo serves as an Up-to-Date Text-Based Attack Suite and Gen AI System Hardening Framework; incorporating links to other open-source resources and in-line citations.
 
-This work is predicated on the [universal and transferable nature](https://llm-attacks.org/) of attacks against Auto-Regressive models, the [conserved efficiency of text-based attack modalities](https://arxiv.org/pdf/2307.14061v1.pdf) (see: Figure 3) even for mutlimodal models, and the [non-trivial nature of hardening GenAI systems](https://www.latentspace.tools/).
+This work is predicated on the following:
+
+1) The [universal and transferable nature](https://llm-attacks.org/) of attacks against Auto-Regressive models
+2) The [conserved efficiency of text-based attack modalities](https://arxiv.org/pdf/2307.14061v1.pdf) (see: Figure 3) even for mutlimodal models
+3) The [non-trivial nature of hardening GenAI systems](https://www.latentspace.tools/).
 
 ## Gen AI Hardening Checklist 
 
