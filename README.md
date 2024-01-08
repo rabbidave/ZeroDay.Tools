@@ -16,7 +16,7 @@ Dependency: Requires specific API fields; no pre-processing
 ### [Pre-Processed Attacks](https://github.com/rabbidave/ZeroDay.Tools#pre-processed-attack-details)
 Key Exposure: Data Loss via Exploitation of Distributed Systems making API calls
 
-Dependency: Requires a [localized target](https://huggingface.co/docs/huggingface_hub/main/en/package_reference/hf_file_system); [universal & transferable](https://llm-attacks.org/)
+Dependency: Requires [localized target](https://huggingface.co/docs/huggingface_hub/main/en/package_reference/hf_file_system) of either [Language Models](https://llm-attacks.org/) or [Mutlimodal Models](https://github.com/Zoky-2020/SGA); relevant [language](https://github.com/rabbidave/ZeroDay.Tools) or [mutlimodal](https://github.com/ericyinyzy/VLAttack) attack frameworks
 ### [System Context Extraction](https://github.com/rabbidave/ZeroDay.Tools#system-context-extraction-details)
 Key Exposure: Documentation & Distribution of System Vulnerabilities; Non-Compliance with AI Governance Standards
 
@@ -58,6 +58,9 @@ e.g. Unauthorized IAM Actions, Internal Database Access, etc
 
 ## Detailed Vulnerability Remediation
 
+<details>
+  <summary>Vulnerability Details & Takeaways (Click to Expand)</summary>
+
 #### Optimization-Free Attack Details
 Dependency: Requires specific API fields; no pre-processing
 
@@ -68,7 +71,7 @@ Takeaway: [Mitigate low-complexity priming attacks](https://llmpriming.focallab.
 #### Pre-Processed Attack Details
 Key Exposure: Data Loss via Exploitation of Distributed Systems making API calls
 
-Dependency: Requires [localized target](https://huggingface.co/docs/huggingface_hub/main/en/package_reference/hf_file_system) of either [Language Models](https://llm-attacks.org/) or [Mutlimodal Models](https://github.com/Zoky-2020/SGA)
+Dependency: Requires [localized target](https://huggingface.co/docs/huggingface_hub/main/en/package_reference/hf_file_system) of either [Language Models](https://llm-attacks.org/) or [Mutlimodal Models](https://github.com/Zoky-2020/SGA); relevant [language](https://github.com/rabbidave/ZeroDay.Tools) or [mutlimodal](https://github.com/ericyinyzy/VLAttack) attack frameworks
 
 Takeaway: [Defeat pre-processed optimization attacks](https://www.latentspace.tools/) by pre-defining embeddings for 'good' and 'bad' examples, logging, [clustering, and flagging of non-conforming entries](https://www.latentspace.tools/#h.lwa4hv3scloi) pre-output generation, as well as utilizing windowed evaluation of input/output embeddings against application-specific baselines
 
@@ -111,6 +114,8 @@ Dependency: Lack of Active Assessment of Sensitive or External Systems
 Key Exposure: Documentation & Distribution of System Vulnerabilities; Brand Reputation Damage & Performance Degradation
 
 Takeaway: Utilize a [Defense in Depth](https://en.wikipedia.org/wiki/Defense_in_depth_(computing)) approach (e.g. [Purple Teaming](https://www.splunk.com/en_us/blog/learn/purple-team.html)), especially for Auto Regressive Models, while staying up to date on the latest [attack & defense paradigms](https://owasp.org/www-project-top-10-for-large-language-model-applications/); utilize open-source [code-generation](https://ai.meta.com/llama/purple-llama/#cybersecurity) and [vulnerability](https://github.com/cleverhans-lab/cleverhans) assesment frameworks, [contribute to the community](https://www.zeroday.tools/), etc.
+
+</details>
 
 
 ### Changelog from [LLM-Attacks](https://github.com/llm-attacks/llm-attacks) base repo:
