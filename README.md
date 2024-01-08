@@ -16,7 +16,7 @@ Dependency: Requires specific API fields; no pre-processing
 ### [Pre-Processed Attacks](https://github.com/rabbidave/ZeroDay.Tools#pre-processed-attack-details)
 Key Exposure: Data Loss via Exploitation of Distributed Systems making API calls
 
-Dependency: Requires [localized target](https://huggingface.co/docs/huggingface_hub/main/en/package_reference/hf_file_system) of either [Language Models](https://llm-attacks.org/) or [Mutlimodal Models](https://github.com/Zoky-2020/SGA)
+Dependency: Requires [localized target](https://huggingface.co/docs/huggingface_hub/main/en/package_reference/hf_file_system) of either [Language Models](https://llm-attacks.org/) or [Mutlimodal Models](https://github.com/Zoky-2020/SGA); relevant [language](https://github.com/rabbidave/ZeroDay.Tools) or [mutlimodal](https://github.com/ericyinyzy/VLAttack) attack frameworks
 ### [System Context Extraction](https://github.com/rabbidave/ZeroDay.Tools#system-context-extraction-details)
 Key Exposure: Documentation & Distribution of System Vulnerabilities; Non-Compliance with AI Governance Standards
 
@@ -71,7 +71,7 @@ Takeaway: [Mitigate low-complexity priming attacks](https://llmpriming.focallab.
 #### Pre-Processed Attack Details
 Key Exposure: Data Loss via Exploitation of Distributed Systems making API calls
 
-Dependency: Requires [localized target](https://huggingface.co/docs/huggingface_hub/main/en/package_reference/hf_file_system) of either [Language Models](https://llm-attacks.org/) or [Mutlimodal Models](https://github.com/Zoky-2020/SGA)
+Dependency: Requires [localized target](https://huggingface.co/docs/huggingface_hub/main/en/package_reference/hf_file_system) of either [Language Models](https://llm-attacks.org/) or [Mutlimodal Models](https://github.com/Zoky-2020/SGA); relevant [language](https://github.com/rabbidave/ZeroDay.Tools) or [mutlimodal](https://github.com/ericyinyzy/VLAttack) attack frameworks
 
 Takeaway: [Defeat pre-processed optimization attacks](https://www.latentspace.tools/) by pre-defining embeddings for 'good' and 'bad' examples, logging, [clustering, and flagging of non-conforming entries](https://www.latentspace.tools/#h.lwa4hv3scloi) pre-output generation, as well as utilizing windowed evaluation of input/output embeddings against application-specific baselines
 
