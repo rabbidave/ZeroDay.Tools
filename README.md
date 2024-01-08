@@ -68,9 +68,9 @@ Takeaway: [Mitigate low-complexity priming attacks](https://llmpriming.focallab.
 #### Pre-Processed Attack Details
 Key Exposure: Data Loss via Exploitation of Distributed Systems making API calls
 
-Dependency: Requires [localized target](https://huggingface.co/docs/huggingface_hub/main/en/package_reference/hf_file_system); [universal & transferable](https://llm-attacks.org/)
+Dependency: Requires [localized target](https://huggingface.co/docs/huggingface_hub/main/en/package_reference/hf_file_system) of either [Language Models](https://llm-attacks.org/) or [Mutlimodal Models](https://github.com/Zoky-2020/SGA)
 
-Takeaway: [Defeat pre-processed optimization attacks](https://www.latentspace.tools/) by pre-defining unwanted behaviors, actively monitoring for similar behavior, as well as utilizing windowed evaluation of input/output embeddings against application-specific baselines
+Takeaway: [Defeat pre-processed optimization attacks](https://www.latentspace.tools/) by pre-defining embeddings for 'good' and 'bad' examples, logging, [clustering, and flagging of non-conforming entries](https://www.latentspace.tools/#h.lwa4hv3scloi) pre-output generation, as well as utilizing windowed evaluation of input/output embeddings against application-specific baselines
 
 #### System Context Extraction Details
 
@@ -110,7 +110,7 @@ Dependency: Lack of Active Assessment of Sensitive or External Systems
 
 Key Exposure: Documentation & Distribution of System Vulnerabilities; Brand Reputation Damage & Performance Degradation
 
-Takeaway: Utilize a [Defense in Depth](https://en.wikipedia.org/wiki/Defense_in_depth_(computing)) approach (e.g. [Purple Teaming](https://www.splunk.com/en_us/blog/learn/purple-team.html)), especially for Auto Regressive Models, while staying up to date on the latest [attack & defense paradigms](https://owasp.org/www-project-top-10-for-large-language-model-applications/); utilize [open-source resources](https://ai.meta.com/llama/purple-llama/#cybersecurity), [contribute to the community](https://www.zeroday.tools/), etc.
+Takeaway: Utilize a [Defense in Depth](https://en.wikipedia.org/wiki/Defense_in_depth_(computing)) approach (e.g. [Purple Teaming](https://www.splunk.com/en_us/blog/learn/purple-team.html)), especially for Auto Regressive Models, while staying up to date on the latest [attack & defense paradigms](https://owasp.org/www-project-top-10-for-large-language-model-applications/); utilize open-source [code-generation](https://ai.meta.com/llama/purple-llama/#cybersecurity) and [vulnerability](https://github.com/cleverhans-lab/cleverhans) assesment frameworks, [contribute to the community](https://www.zeroday.tools/), etc.
 
 
 ### Changelog from [LLM-Attacks](https://github.com/llm-attacks/llm-attacks) base repo:
