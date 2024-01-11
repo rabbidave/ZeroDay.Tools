@@ -1,6 +1,6 @@
 # [ZeroDay.Tools](https://www.zeroday.tools/): Gen AI Hardening x Attack Suite
 
-This repo serves as an Up-to-Date Text-Based Attack Suite and Gen AI System Hardening Framework; incorporating links to other open-source resources and in-line citations.
+This repo serves as an Up-to-Date Multimodal Attack Suite and Gen AI System Hardening Framework; incorporating links to other open-source resources (white/blackbox attacks, evaluations, etc); with in-line citations.
 
 This work is predicated on the following:
 
