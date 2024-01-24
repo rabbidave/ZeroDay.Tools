@@ -72,9 +72,6 @@ e.g. Unauthorized IAM Actions, Internal Database Access, etc
 
 ## Detailed Vulnerability Remediation
 
-<details>
-  <summary>Vulnerability Details, Mitigations & Takeaways (Click to Expand)</summary>
-
 #### Optimization-Free Attack Details
 Dependency: Requires [specific API fields](https://cookbook.openai.com/examples/using_logprobs); no pre-processing
 
@@ -137,8 +134,6 @@ Key Exposure: Documentation & Distribution of System Vulnerabilities; Brand Repu
 
 Takeaway: Utilize a [Defense in Depth](https://en.wikipedia.org/wiki/Defense_in_depth_(computing)) approach (e.g. [Purple Teaming](https://www.splunk.com/en_us/blog/learn/purple-team.html)), especially for Auto Regressive Models, while staying up to date on the latest [attack & defense paradigms](https://owasp.org/www-project-top-10-for-large-language-model-applications/); utilize open-source [code-generation](https://ai.meta.com/llama/purple-llama/#cybersecurity) and [vulnerability](https://github.com/cleverhans-lab/cleverhans) assesment frameworks, [contribute to the community](https://www.zeroday.tools/), etc.
 
-</details>
-
 <details>
   <summary>Examples of Traditional ML and Deep/Reinforcement Learning Vulnerabilities x Exposures (Click to Expand)</summary>
 
@@ -157,6 +152,7 @@ Dependency: Requires Out-Of-Date Vulnerability Definitions and/or lack of image 
 Key Exposure: Brand Reputation Damage & Performance Degradation
 
 Takeaway: Mitigate commonly [exploited repos](https://thehackernews.com/2023/12/116-malware-packages-found-on-pypi.html) and [analytics packages](https://security.snyk.io/package/pip/pyspark) by establishing best-practices with respection to vulnerability management, repackaging, and image scanning
+</details>
 
 
 ### Changelog from [LLM-Attacks](https://github.com/llm-attacks/llm-attacks) base repo:
