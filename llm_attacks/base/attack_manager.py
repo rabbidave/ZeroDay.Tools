@@ -1492,7 +1492,7 @@ class ModelWorker(object):
             # Default to AutoModelForCausalLM for all other models
             self.model = AutoModelForCausalLM.from_pretrained(
                 model_path,
-                torch_dtype=torch.float16,
+                torch_dtype="auto",
                 trust_remote_code=True,
                 **model_kwargs
             ).to(device).eval()
