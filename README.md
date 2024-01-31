@@ -89,16 +89,17 @@ Takeaway: Mitigate retrieval of information about the system and application con
 
 #### Model Context Extraction Details
 
-Key Exposure: Documentation & Distribution of Model-Specific Vulnerabilities
+Key Exposure: Documentation & Distribution of Model Vulnerabilities & Data Access
 
-Dependency: System Access to GPU; net-new threat vector with myriad vulnerable platforms
+Dependency: API Access for context window; [Access to Embeddings for Decoding](https://github.com/jxmorris12/vec2text) (e.g. VectorDB)
 
-Takeaway: Reduce the risk from discoverable rules, extractable context (e.g. persistent attached document-based systems context), etc via [pre-defined rules](https://developer.nvidia.com/blog/nvidia-enables-trustworthy-safe-and-secure-large-language-model-conversational-systems/); prevent [decodable embeddings](https://github.com/jxmorris12/vec2text) (e.g. additional underlying data via VectorDB & Backups) by [adding appropriate levels of noise](https://arxiv.org/pdf/2310.06816.pdf) or using customized embedding models for sensitive data.
+Takeaway: Reduce the risk from discoverable rules, extractable context (e.g. persistent attached document-based systems context), etc via [pre-defined rules](https://developer.nvidia.com/blog/nvidia-enables-trustworthy-safe-and-secure-large-language-model-conversational-systems/); prevent [decodable embeddings](https://github.com/jxmorris12/vec2text) (e.g. additional underlying data via VectorDB & Backups) by adding [appropriate levels of noise](https://arxiv.org/pdf/2310.06816.pdf) or using customized embedding models for sensitive data.
+
 
 #### Pre-Processed Attack Details
 Key Exposure: Data Loss via Exploitation of Distributed Systems
 
-Dependency: Whitebox Attacks require [a localized target](https://huggingface.co/docs/huggingface_hub/main/en/package_reference/hf_file_system) of either [Language Models](https://llm-attacks.org/) or [Mutlimodal Models](https://huggingface.co/liuhaotian/llava-v1.5-13b); multiple frameworks (e.g. [SGA](https://github.com/Zoky-2020/SGA), [VLAttack](https://github.com/ericyinyzy/VLAttack), etc) also designed to enable Transferable Multimodal Blackbox Attacks
+Dependency: Whitebox Attacks require [a localized target](https://huggingface.co/docs/huggingface_hub/main/en/package_reference/hf_file_system); multiple frameworks (e.g. [SGA](https://github.com/Zoky-2020/SGA), [VLAttack](https://github.com/ericyinyzy/VLAttack), etc) support Transferable Multimodal Blackbox Attacks
 
 Takeaway: [Defeat pre-processed optimization attacks](https://www.latentspace.tools/) by pre-defining embeddings for 'good' and 'bad' examples, logging, [clustering, and flagging of non-conforming entries](https://www.latentspace.tools/#h.lwa4hv3scloi) pre-output generation, as well as utilizing windowed evaluation of input/output embeddings against application-specific baselines
 
@@ -114,7 +115,7 @@ Takeaway:  [Prevent disclosure of underlying data](https://not-just-memorizatio
 
 Key Exposure: Legal Liability from Data Licensure Breaches; Non-Compliance with AI Governance Standards
 
-Dependency: System Access to GPU; net-new threat vector with [yriad vulnerable platforms](https://github.com/trailofbits/LeftoverLocalsRelease)
+Dependency: System Access to GPU; net-new threat vector with [myriad vulnerable platforms](https://github.com/trailofbits/LeftoverLocalsRelease)
 
 Takeaway: Multiple Open-Source Attack frameworks are exploiting a previously underlized data exfiltration vector in the form of GPU VRAM, which has traditionally been a shared resource without active monitoring; secure virtualization and segmentation tooling exists for GPUs but mitigate this vulnerability is an active area of research.
 
