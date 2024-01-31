@@ -42,7 +42,7 @@ Dependency: Requires API Access over time; ‘rules’ defeated via prior system
 ### [Kill Chain Step 6) Model Data Extraction](https://github.com/rabbidave/ZeroDay.Tools#model-data-extraction-details)
 Key Exposure: Brand Reputation Damage & Performance Degradation; Non-Compliance with AI Governance Standards, especially for [“high-risk systems”](https://cset.georgetown.edu/article/the-eu-ai-act-a-primer/)
 
-Dependency: System Access to GPU; net-new threat vector with [yriad vulnerable platforms](https://github.com/trailofbits/LeftoverLocalsRelease)
+Dependency: System Access to GPU; net-new threat vector with [myriad vulnerable platforms](https://github.com/trailofbits/LeftoverLocalsRelease)
 ### [Kill Chain Step 7) Supply Chain & Data Poisoning](https://github.com/rabbidave/ZeroDay.Tools#supply-chain--data-poisoning-details)
 Key Exposure: Brand Reputation Damage & Performance Degradation; Non-Compliance with AI Governance Standards, especially for [“high-risk systems”](https://cset.georgetown.edu/article/the-eu-ai-act-a-primer/)
 
