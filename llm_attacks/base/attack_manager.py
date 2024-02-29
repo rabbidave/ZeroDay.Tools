@@ -15,7 +15,7 @@ import torch.nn.functional as F
 from fastchat.model import get_conversation_template
 from transformers import (AutoModelForCausalLM, AutoTokenizer, GPT2LMHeadModel,
                           GPTJForCausalLM, GPTNeoXForCausalLM,
-                          LlamaForCausalLM, MistralForCausalLM, MixtralForCausalLM, PhiForCausalLM)
+                          LlamaForCausalLM, MistralForCausalLM, MixtralForCausalLM, PhiForCausalLM, StarCoderForCausalLM)
 
 from auto_gptq import AutoGPTQForCausalLM, BaseQuantizeConfig
 from auto_gptq.modeling import LlamaGPTQForCausalLM
