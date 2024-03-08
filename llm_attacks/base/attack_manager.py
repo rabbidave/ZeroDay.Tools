@@ -15,7 +15,7 @@ import torch.nn.functional as F
 from fastchat.model import get_conversation_template
 from transformers import (AutoModelForCausalLM, AutoTokenizer, GPT2LMHeadModel,
                           GPTJForCausalLM, GPTNeoXForCausalLM,
-                          LlamaForCausalLM, MistralForCausalLM, MixtralForCausalLM, PhiForCausalLM, StarCoderForCausalLM)
+                          LlamaForCausalLM, MistralForCausalLM, MixtralForCausalLM, PhiForCausalLM)
 
 from auto_gptq import AutoGPTQForCausalLM, BaseQuantizeConfig
 from auto_gptq.modeling import LlamaGPTQForCausalLM
@@ -39,8 +39,6 @@ def get_embedding_layer(model):
         return model.model.embed_tokens
     elif isinstance(model, GPTNeoXForCausalLM):
         return model.base_model.embed_in
-    elif isinstance(model, StarCoderForCausalLM):
-        return model.model.embed_tokens
     elif isinstance(model, AutoModelForCausalLM):
         return model.model.embed_tokens
     elif isinstance(model, MistralForCausalLM):
@@ -61,8 +59,6 @@ def get_embedding_matrix(model):
         return model.model.embed_tokens.weight
     elif isinstance(model, GPTNeoXForCausalLM):
         return model.base_model.embed_in.weight
-    elif isinstance(model, StarCoderForCausalLM):
-        return model.model.embed_tokens.weight
     elif isinstance(model, AutoModelForCausalLM):
         return model.model.embed_tokens.weight
     elif isinstance(model, MistralForCausalLM):
@@ -83,8 +79,6 @@ def get_embeddings(model, input_ids):
         return model.model.embed_tokens(input_ids)
     elif isinstance(model, GPTNeoXForCausalLM):
         return model.base_model.embed_in(input_ids).half()
-    elif isinstance(model, StarCoderForCausalLM):
-        return model.model.embed_tokens(input_ids)
     elif isinstance(model, AutoModelForCausalLM):
         return model.model.embed_tokens(input_ids)
     elif isinstance(model, MistralForCausalLM):
