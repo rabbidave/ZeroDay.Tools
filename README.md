@@ -34,13 +34,13 @@ Dependency: API Access for context window retrieval; VectorDB Access for [decodi
 ### [Kill Chain Step 4) Pre-Processed Attacks](https://github.com/rabbidave/ZeroDay.Tools#pre-processed-attack-details)
 Key Exposure: Data Loss via Exploitation of Distributed Systems
 
-Dependency: Whitebox Attacks require [a localized target](https://huggingface.co/docs/huggingface_hub/main/en/package_reference/hf_file_system) of either [Language Models](https://llm-attacks.org/) or [Mutlimodal Models](https://huggingface.co/liuhaotian/llava-v1.5-13b); multiple frameworks (e.g. [SGA](https://github.com/Zoky-2020/SGA), [VLAttack](https://github.com/ericyinyzy/VLAttack), etc) also designed to enable Transferable Multimodal Blackbox Attacks
+Dependency: Whitebox Attacks require [a localized target](https://huggingface.co/docs/huggingface_hub/main/en/package_reference/hf_file_system) of either [Language Models](https://llm-attacks.org/) or [Mutlimodal Models](https://huggingface.co/liuhaotian/llava-v1.5-13b); multiple frameworks (e.g. [SGA](https://github.com/Zoky-2020/SGA), [VLAttack](https://github.com/ericyinyzy/VLAttack), etc) also designed to enable Transferable Multimodal Blackbox Attacks and [evade 'Guard Models'](https://arxiv.org/pdf/2402.15911.pdf)
 ### [Kill Chain Step 5) Training Data Extraction](https://github.com/rabbidave/ZeroDay.Tools#training-data-extraction-details)
 Key Exposure: Legal Liability from Data Licensure Breaches; Non-Compliance with AI Governance Standards
 
 Dependency: Requires API Access over time; ‘rules’ defeated via prior system and model context extraction paired with optimized attacks
 ### [Kill Chain Step 6) Model Data Extraction](https://github.com/rabbidave/ZeroDay.Tools#model-data-extraction-details)
-Key Exposure: Brand Reputation Damage & Performance Degradation; Non-Compliance with AI Governance Standards, especially for [“high-risk systems”](https://cset.georgetown.edu/article/the-eu-ai-act-a-primer/)
+Key Exposure: [IP Loss](https://arxiv.org/pdf/2403.06634.pdf), Brand Reputational Damage & Performance Degradation; Non-Compliance with AI Governance Standards, especially for [“high-risk systems”](https://cset.georgetown.edu/article/the-eu-ai-act-a-primer/)
 
 Dependency: System Access to GPU; net-new threat vector with [myriad vulnerable platforms](https://github.com/trailofbits/LeftoverLocalsRelease)
 ### [Kill Chain Step 7) Supply Chain & Data Poisoning](https://github.com/rabbidave/ZeroDay.Tools#supply-chain--data-poisoning-details)
@@ -99,7 +99,7 @@ Takeaway: Reduce the risk from discoverable rules, extractable context (e.g. per
 #### Pre-Processed Attack Details
 Key Exposure: Data Loss via Exploitation of Distributed Systems
 
-Dependency: Whitebox Attacks require [a localized target](https://huggingface.co/docs/huggingface_hub/main/en/package_reference/hf_file_system); multiple frameworks (e.g. [SGA](https://github.com/Zoky-2020/SGA), [VLAttack](https://github.com/ericyinyzy/VLAttack), etc) support Transferable Multimodal Blackbox Attacks
+Dependency: Whitebox Attacks require [a localized target](https://huggingface.co/docs/huggingface_hub/main/en/package_reference/hf_file_system); multiple frameworks (e.g. [SGA](https://github.com/Zoky-2020/SGA), [VLAttack](https://github.com/ericyinyzy/VLAttack), etc) support Transferable Multimodal Blackbox Attacks and [evade 'Guard Models'](https://arxiv.org/pdf/2402.15911.pdf)
 
 Takeaway: [Defeat pre-processed optimization attacks](https://www.latentspace.tools/) by pre-defining embeddings for 'good' and 'bad' examples, logging, [clustering, and flagging of non-conforming entries](https://www.latentspace.tools/#h.lwa4hv3scloi) pre-output generation, as well as utilizing windowed evaluation of input/output embeddings against application-specific baselines
 
@@ -113,7 +113,7 @@ Takeaway:  [Prevent disclosure of underlying data](https://not-just-memorizatio
 
 #### Model Data Extraction Details
 
-Key Exposure: Legal Liability from Data Licensure Breaches; Non-Compliance with AI Governance Standards
+Key Exposure: [IP Loss](https://arxiv.org/pdf/2403.06634.pdf), Brand Reputational Damage & Performance Degradation; Non-Compliance with AI Governance Standards, especially for [“high-risk systems”](https://cset.georgetown.edu/article/the-eu-ai-act-a-primer/)
 
 Dependency: System Access to GPU; net-new threat vector with [myriad vulnerable platforms](https://github.com/trailofbits/LeftoverLocalsRelease)
 
