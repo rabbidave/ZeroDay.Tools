@@ -1,4 +1,4 @@
-# Update: [Runme Runbook Available](https://github.com/rabbidave/ZeroDay.Tools/blob/main/llm-attacks-runbook.md#llm-adversarial-testing-runbook)
+# Update: [Runme Runbook Available](https://github.com/rabbidave/ZeroDay.Tools/blob/main/adversarial-testing.md#llm-adversarial-testing-runbook)
 
 # [ZeroDay.Tools](https://www.zeroday.tools/): Gen AI Hardening x Attack Suite
 
