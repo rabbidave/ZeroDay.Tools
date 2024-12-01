@@ -1,3 +1,5 @@
+# Update: [Runme Runbook Available](https://github.com/rabbidave/ZeroDay.Tools/blob/main/llm-attacks-runbook.md#llm-adversarial-testing-runbook
+
 # [ZeroDay.Tools](https://www.zeroday.tools/): Gen AI Hardening x Attack Suite
 
 This repo serves as an Up-to-Date AI/MLHardening Framework; incorporating a Multimodal Attack Suite for Gen AI and links to open-source resources (white/blackbox attacks, evaluations, etc).
