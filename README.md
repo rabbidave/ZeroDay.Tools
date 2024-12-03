@@ -1,4 +1,6 @@
-# Update: [Runme Runbook Available](https://github.com/rabbidave/ZeroDay.Tools/blob/main/adversarial-testing.md#llm-adversarial-testing-runbook)
+<a target="_blank" href="https://colab.research.google.com/github/rabbidave/ZeroDay.Tools/blob/main/ZeroDayTools.ipynb">
+  <img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Colab Notebook Here"/>
+</a>
 
 # [ZeroDay.Tools](https://www.zeroday.tools/): Gen AI Hardening x Attack Suite
 
