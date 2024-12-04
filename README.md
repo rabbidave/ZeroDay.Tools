@@ -1,4 +1,8 @@
-# [ZeroDay.Tools](https://www.zeroday.tools/): Gen AI Hardening x Attack Suite
+<a target="_blank" href="https://colab.research.google.com/github/rabbidave/ZeroDay.Tools/blob/main/ZeroDayTools.ipynb">
+  <img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Colab Notebook Here"/>
+</a>
+
+# [ZeroDay.Tools](https://www.zeroday.tools/) - Gen AI Hardening & [Attack Suite](https://colab.research.google.com/github/rabbidave/ZeroDay.Tools/blob/main/ZeroDayTools.ipynb)
 
 This repo serves as an Up-to-Date AI/MLHardening Framework; incorporating a Multimodal Attack Suite for Gen AI and links to open-source resources (white/blackbox attacks, evaluations, etc).
 
