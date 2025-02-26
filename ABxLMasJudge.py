@@ -143,46 +143,68 @@ class ModelRunner:
         """Call the model API with the test case."""
         start_time = time.time()
         
-        # Preprocess the input key
-        preprocessed_key = preprocess_text(test_case.key)
-        
-        # Format prompt using the preprocessed key
-        # Handle potential formatting issues by escaping curly braces
         try:
-            # Use a try-except block for string formatting
-            prompt = self.prompt_template.replace("{key}", preprocessed_key)
-        except Exception as e:
-            # Fallback for other formatting issues
-            logger.warning(f"Error formatting prompt template with replace: {str(e)}")
+            # Preprocess the input key
+            preprocessed_key = preprocess_text(test_case.key)
+            
+            # Format prompt using the preprocessed key
+            # Handle potential formatting issues by escaping curly braces
             try:
-                # Try with string formatting if replacement fails
-                prompt = self.prompt_template.format(key=preprocessed_key)
-            except Exception as e2:
-                # Second fallback - just concatenate the template and input
-                logger.warning(f"Error formatting prompt template: {str(e2)}")
-                prompt = f"{self.prompt_template}\n\nINPUT: {preprocessed_key}"
-        
-        # Determine API type and make appropriate call
-        if "openai" in self.endpoint.api_url.lower():
-            response = self._call_openai_api(prompt)
-        elif "anthropic" in self.endpoint.api_url.lower():
-            response = self._call_anthropic_api(prompt)
-        elif "ollama" in self.endpoint.api_url.lower() or ":11434" in self.endpoint.api_url:
-            response = self._call_ollama_api(prompt)
-        elif "generativelanguage.googleapis.com" in self.endpoint.api_url:
-            response = self._call_gemini_api(prompt)
-        else:
-            response = self._call_generic_api(prompt)
-        
-        end_time = time.time()
-        
-        return ModelResponse(
-            test_id=test_case.id or test_case.key[:10],
-            model_name=self.endpoint.name,
-            output=response,
-            latency=end_time - start_time,
-        )
-        
+                # For judge prompts, the "key" is already the full prompt
+                if test_case.id and test_case.id.startswith("judge_"):
+                    prompt = preprocessed_key  # The key already contains the full prompt for judge
+                else:
+                    # Use a try-except block for string formatting
+                    prompt = self.prompt_template.replace("{key}", preprocessed_key)
+            except Exception as e:
+                # Fallback for other formatting issues
+                logger.warning(f"Error formatting prompt template with replace: {str(e)}")
+                try:
+                    # Try with string formatting if replacement fails
+                    prompt = self.prompt_template.format(key=preprocessed_key)
+                except Exception as e2:
+                    # Second fallback - just concatenate the template and input
+                    logger.warning(f"Error formatting prompt template: {str(e2)}")
+                    prompt = f"{self.prompt_template}\n\nINPUT: {preprocessed_key}"
+            
+            # Determine API type and make appropriate call
+            response = ""
+            api_url_lower = self.endpoint.api_url.lower() if self.endpoint.api_url else ""
+            
+            try:
+                if "openai" in api_url_lower:
+                    response = self._call_openai_api(prompt)
+                elif "anthropic" in api_url_lower:
+                    response = self._call_anthropic_api(prompt)
+                elif "ollama" in api_url_lower or ":11434" in api_url_lower:
+                    response = self._call_ollama_api(prompt)
+                elif "generativelanguage.googleapis.com" in api_url_lower:
+                    response = self._call_gemini_api(prompt)
+                else:
+                    response = self._call_generic_api(prompt)
+            except AttributeError as ae:
+                logger.error(f"AttributeError when trying to call API method: {str(ae)}")
+                # Try the generic API as fallback
+                try:
+                    response = self._call_generic_api(prompt)
+                except Exception as generic_e:
+                    logger.error(f"Generic API call also failed: {str(generic_e)}")
+                    # Last resort - return error message as response
+                    response = f"Error: Failed to call model API. Please check API configuration and try again. Details: {str(ae)}"
+            
+            end_time = time.time()
+            
+            return ModelResponse(
+                test_id=test_case.id or test_case.key[:10],
+                model_name=self.endpoint.name,
+                output=response,
+                latency=end_time - start_time,
+            )
+        except Exception as e:
+            logger.error(f"Unexpected error in generate method: {str(e)}")
+            # Re-raise to trigger retry
+            raise
+    
     def _call_openai_api(self, prompt: str) -> str:
         """Call OpenAI API."""
         headers = {
@@ -212,6 +234,7 @@ class ModelRunner:
         headers = {
             "x-api-key": self.endpoint.api_key,
             "Content-Type": "application/json",
+            "anthropic-version": "2023-06-01"  # Added required version header
         }
         
         data = {
@@ -279,27 +302,31 @@ class ModelRunner:
     
     def _call_generic_api(self, prompt: str) -> str:
         """Call a generic API endpoint."""
-        headers = {
-            "Authorization": f"Bearer {self.endpoint.api_key}",
-            "Content-Type": "application/json",
-        }
-        
-        data = {
-            "prompt": prompt,
-            "model": self.endpoint.model_id,
-            "max_tokens": self.endpoint.max_tokens,
-            "temperature": self.endpoint.temperature,
-        }
-        
-        response = requests.post(
-            self.endpoint.api_url, 
-            headers=headers, 
-            json=data
-        )
-        response.raise_for_status()
-        
-        result = response.json()
-        return result.get("output", str(result))
+        try:
+            headers = {
+                "Authorization": f"Bearer {self.endpoint.api_key}",
+                "Content-Type": "application/json",
+            }
+            
+            data = {
+                "prompt": prompt,
+                "model": self.endpoint.model_id,
+                "max_tokens": self.endpoint.max_tokens,
+                "temperature": self.endpoint.temperature,
+            }
+            
+            response = requests.post(
+                self.endpoint.api_url, 
+                headers=headers, 
+                json=data
+            )
+            response.raise_for_status()
+            
+            result = response.json()
+            return result.get("output", str(result))
+        except Exception as e:
+            logger.error(f"Error in generic API call: {str(e)}")
+            return f"API Error: {str(e)}"
 
 
 class LMJudge:
@@ -312,7 +339,9 @@ class LMJudge:
     ):
         self.endpoint = endpoint
         self.evaluation_prompt_template = evaluation_prompt_template
-        self.model_runner = ModelRunner(endpoint, "{prompt}")
+        # Initialize the model runner with a pass-through prompt template
+        # for judge prompts directly
+        self.model_runner = ModelRunner(endpoint, "{key}")
     
     def evaluate(
         self, 
@@ -327,20 +356,60 @@ class LMJudge:
         preprocessed_champion = preprocess_text(champion_response.output)
         preprocessed_challenger = preprocess_text(challenger_response.output)
         
-        evaluation_prompt = self.evaluation_prompt_template.format(
-            key=preprocessed_key,
-            value=preprocessed_value,
-            champion_output=preprocessed_champion,
-            challenger_output=preprocessed_challenger,
-        )
+        # Build the evaluation prompt directly
+        evaluation_prompt = f"""
+# Model Response Evaluation
+
+You are evaluating two AI model responses to determine which one is better.
+
+## Input Query
+{preprocessed_key}
+
+## Reference Value
+{preprocessed_value}
+
+## Model A (Champion) Response
+```
+{preprocessed_champion}
+```
+
+## Model B (Challenger) Response
+```
+{preprocessed_challenger}
+```
+
+## Evaluation Instructions
+Please compare both responses carefully based on:
+1. Factual accuracy compared to the reference value
+2. Comprehensiveness of information
+3. Clarity and conciseness
+4. Overall quality and usefulness
+
+## Required Response Format
+You MUST start your response with EXACTLY ONE of these verdicts:
+- "VERDICT: MODEL_A_WINS" (if Model A is better)
+- "VERDICT: MODEL_B_WINS" (if Model B is better) 
+- "VERDICT: TIE" (if both are equally good)
+
+Then, on the next line, include:
+"CONFIDENCE: X/5" (where X is a number from 1-5, with 5 being highest confidence)
+
+After these two required lines, explain your reasoning in detail.
+"""
+        
+        # Log the prompt for debugging
+        logger.info(f"Judge evaluation prompt (truncated): {evaluation_prompt[:500]}...")
         
         # Get judge's response
         judge_response = self.model_runner.generate(
             TestCase(key=evaluation_prompt, value="", id=f"judge_{test_case.id}")
         )
         
+        # Log the response for debugging
+        logger.info(f"Judge response (truncated): {judge_response.output[:500]}...")
+        
         # Parse the judge's decision
-        parsed_result = self._parse_judge_response(judge_response.output)
+        parsed_result = self.parse_judge_response(judge_response.output)
         
         return EvaluationResult(
             test_id=test_case.id or test_case.key[:10],
@@ -351,16 +420,33 @@ class LMJudge:
             reasoning=parsed_result["reasoning"],
         )
     
-    def _parse_judge_response(self, response: str) -> Dict[str, Any]:
+    def parse_judge_response(self, response: str) -> Dict[str, Any]:
         """
-        Store the full response without attempting complex parsing.
-        This allows for simpler Excel post-processing.
+        Parse the judge's response to extract verdict, confidence, and reasoning.
         """
-        # Store the raw response for Excel post-processing
+        # Initialize default values
+        verdict = "UNDETERMINED"
+        confidence = 0.0
+        reasoning = response
+        
+        # Extract verdict using regex
+        verdict_match = re.search(r"VERDICT:\s*(MODEL_A_WINS|MODEL_B_WINS|TIE)", response)
+        if verdict_match:
+            verdict = verdict_match.group(1)
+        
+        # Extract confidence using regex
+        confidence_match = re.search(r"CONFIDENCE:\s*(\d+)/5", response)
+        if confidence_match:
+            try:
+                confidence = float(confidence_match.group(1)) / 5.0  # Normalize to 0-1 range
+            except ValueError:
+                # If conversion fails, keep default
+                pass
+        
         return {
-            "winner": "UNDETERMINED",  # Will be determined in Excel
-            "confidence": 0.0,         # Will be determined in Excel
-            "reasoning": response,     # The full response for manual analysis
+            "winner": verdict,
+            "confidence": confidence,
+            "reasoning": reasoning,
         }
 
 
