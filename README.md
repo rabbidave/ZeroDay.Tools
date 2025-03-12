@@ -162,14 +162,3 @@ Key Exposure: Brand Reputation Damage & Performance Degradation
 
 Takeaway: Mitigate commonly [exploited repos](https://thehackernews.com/2023/12/116-malware-packages-found-on-pypi.html) and [analytics packages](https://security.snyk.io/package/pip/pyspark) by establishing best-practices with respection to vulnerability management, repackaging, and image scanning
 </details>
-
-
-### Changelog from [LLM-Attacks](https://github.com/llm-attacks/llm-attacks) base repo:
-
--Updated [embedding functions](https://github.com/rabbidave/LLM-Attacks-v2/blob/main/llm_attacks/base/attack_manager.py#L35) within attack_manager.py to support multiple new model classes (e.g. Mi(s/x)tralForCausalLM, AutoGPTQForCausalLM, etc)
-
--Added [conditional logic](https://github.com/rabbidave/LLM-Attacks-v2/blob/main/llm_attacks/base/attack_manager.py#L1480) to the ModelWorker init inside attack_manager.py allowing for the loading of quantized models based on presence of "GPTQ" in the model path (e.g. GPTQ versions of Mixtral)
-
--Automated and Parameterized the [original demo.py](https://github.com/rabbidave/LLM-Attacks-v2/blob/main/demo.ipynb) into an extensible attack framework allowing for parm'd localization and configuration, iteration over defined target input/outputs w/ test criteria, logging of those prompts/adversarial strings to a standardized JSON format for later utilization, etc
-
-Note: For details on the updated attack scripts [contact me directly](https://www.linkedin.com/in/davidisaacpierce/); trying to balance awareness of a non-patchable vulnerability against responsible open-source contributions. These attacks seem to work against any auto-regressive sequence model irrespective of architecture; including multimodal models
