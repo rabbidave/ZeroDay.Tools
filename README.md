@@ -4,6 +4,10 @@
 
 # [ZeroDay.Tools](https://www.zeroday.tools/) - Gen AI Hardening & [Attack Suite](https://colab.research.google.com/github/rabbidave/ZeroDay.Tools/blob/main/ZeroDayTools.ipynb)
 
+Note: for per-integration logging & monitoring see [LatentSpace.Tools](www.latentspace.tools)
+
+![testing](https://github.com/rabbidave/ZeroDay.Tools/blob/c711f7faf503c2cc89365db354e239e42715fe61/image.png)
+
 This repo serves as an Up-to-Date AI/MLHardening Framework; incorporating a Multimodal Attack Suite for Gen AI and links to open-source resources (white/blackbox attacks, evaluations, etc).
 
 This repo is built around the security notions of a Kill Chain x Defense Plan; framed primarily around Gen AI, with examples from Discriminative ML and Deep Reinforcement Learning
