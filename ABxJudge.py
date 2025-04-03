@@ -14,6 +14,8 @@ import csv
 import io
 from urllib.parse import urlparse
 
+import signal # Added for CLI stop handling
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -84,6 +86,9 @@ REMOVE_CONTROL_CHARS = True
 NORMALIZE_NEWLINES = True
 SKIP_BAD_LINES = True
 SHOW_SAMPLE = True # Show sample data after loading & preprocessing
+
+# Global flag to signal stopping the test run
+STOP_REQUESTED = False
 
 # --- Text Preprocessing Function ---
 def preprocess_text(text, max_length=None, remove_special_chars=None, normalize_whitespace=None):
@@ -746,8 +751,32 @@ class ModelTester:
         self.challenger_endpoint = challenger_endpoint
         self.judge_endpoint = judge_endpoint
 
-    def run_test(self, test_cases: List[TestCase], batch_size: int = 5, progress=None) -> Dict[str, Any]:
-        """Run the complete test process: generate responses, evaluate, aggregate."""
+    def run_test(
+        self,
+        test_cases: List[TestCase],
+        batch_size: int = 5,
+        progress=None,
+        batch_retry_attempts: int = 0,  # Number of retry attempts for batches
+        batch_backoff_factor: float = 2.0,  # Exponential backoff factor
+        batch_max_wait: int = 60,  # Maximum wait time between retries in seconds
+        batch_retry_trigger_strings: Optional[List[str]] = None  # Strings that trigger a retry
+    ) -> Dict[str, Any]:
+        """
+        Run the complete test process: generate responses, evaluate, aggregate.
+        
+        The method includes a batch retry mechanism that can automatically retry batches
+        when certain trigger strings are detected in model responses or judge reasoning.
+        This is useful for handling transient errors, rate limiting, or other issues that
+        might affect the quality of responses.
+        Args:
+            test_cases: List of test cases to process
+            batch_size: Number of test cases to process in each batch
+            progress: Optional progress callback function
+            batch_retry_attempts: Maximum number of retry attempts for a batch (0 means no retries)
+            batch_backoff_factor: Factor for exponential backoff between retries
+            batch_max_wait: Maximum wait time in seconds between retries
+            batch_retry_trigger_strings: List of strings that trigger a batch retry when found in model responses
+        """
         all_evaluation_results: List[EvaluationResult] = []
         champion_metrics = {"total_latency": 0.0, "total_output_chars": 0, "success_count": 0, "error_count": 0}
         challenger_metrics = {"total_latency": 0.0, "total_output_chars": 0, "success_count": 0, "error_count": 0}
@@ -760,107 +789,188 @@ class ModelTester:
 
         total_batches = (num_cases + batch_size - 1) // batch_size
         current_case_index = 0
+        global STOP_REQUESTED # Access the global flag
 
         # Process in batches
         for i in range(0, num_cases, batch_size):
+            if STOP_REQUESTED:
+                logger.warning(f"Stop requested. Finishing early after {i} cases.")
+                if progress:
+                    progress(i / num_cases, f"Stopping early after {i} cases...")
+                break # Exit the batch loop
+
             batch = test_cases[i:min(i + batch_size, num_cases)]
             batch_num = i // batch_size + 1
             logger.info(f"Processing batch {batch_num}/{total_batches} (Cases {i+1}-{min(i+batch_size, num_cases)})")
 
-            if progress is not None:
-                progress(i / num_cases, f"Running Batch {batch_num}/{total_batches}")
+            # Initialize retry counter and success flag for this batch
+            retry_count = 0
+            batch_success = False
+            
+            # Process this batch with retries if configured
+            while not batch_success and retry_count <= batch_retry_attempts:
+                if retry_count > 0:
+                    # Calculate backoff delay with exponential increase, capped at max_wait
+                    delay = min(batch_backoff_factor ** (retry_count - 1), batch_max_wait)
+                    logger.info(f"Retrying batch {batch_num} (attempt {retry_count}/{batch_retry_attempts}) after {delay:.2f}s delay")
+                    if progress is not None:
+                        progress(i / num_cases, f"Retrying Batch {batch_num} (attempt {retry_count}/{batch_retry_attempts})")
+                    time.sleep(delay)
+                else:
+                    if progress is not None:
+                        progress(i / num_cases, f"Running Batch {batch_num}/{total_batches}")
 
-            # Store responses and evaluation results for the batch
-            batch_champ_responses: Dict[str, ModelResponse] = {}
-            batch_chall_responses: Dict[str, ModelResponse] = {}
-            batch_eval_results: List[EvaluationResult] = []
+                # Store responses and evaluation results for the batch
+                batch_champ_responses: Dict[str, ModelResponse] = {}
+                batch_chall_responses: Dict[str, ModelResponse] = {}
+                batch_eval_results: List[EvaluationResult] = []
 
-            # 1. Get responses from Champion and Challenger models
-            for test_case in batch:
-                 current_case_index += 1
-                 case_id = test_case.id or f"case_{current_case_index}" # Ensure ID
-                 test_case.id = case_id # Update test case object with ID
+                # 1. Get responses from Champion and Challenger models
+                # Store the current case indices for this batch to ensure consistent IDs across retries
+                batch_case_indices = {}
+                for i, test_case in enumerate(batch):
+                    # Only assign a new index if this is the first attempt for this batch
+                    if retry_count == 0:
+                        current_case_index += 1
+                    
+                    # Use existing ID or create a consistent one based on current_case_index
+                    case_id = test_case.id or f"case_{current_case_index - len(batch) + i + 1}"
+                    test_case.id = case_id # Update test case object with ID
+                    batch_case_indices[case_id] = i
 
-                 # Champion
-                 try:
-                      champ_resp = self.champion_runner.generate(test_case)
-                      batch_champ_responses[case_id] = champ_resp
-                      champion_metrics["total_latency"] += champ_resp.latency
-                      champion_metrics["total_output_chars"] += len(champ_resp.output)
-                      if not champ_resp.output.startswith("Error:"): champion_metrics["success_count"] += 1
-                      else: champion_metrics["error_count"] += 1
-                 except Exception as e:
-                      logger.error(f"Error generating champion response for case {case_id}: {e}")
-                      batch_champ_responses[case_id] = ModelResponse(case_id, self.champion_endpoint.name, f"Error: Generation failed - {e}", 0)
-                      champion_metrics["error_count"] += 1
+                    # Champion
+                    try:
+                        champ_resp = self.champion_runner.generate(test_case)
+                        batch_champ_responses[case_id] = champ_resp
+                        champion_metrics["total_latency"] += champ_resp.latency
+                        champion_metrics["total_output_chars"] += len(champ_resp.output)
+                        if not champ_resp.output.startswith("Error:"): champion_metrics["success_count"] += 1
+                        else: champion_metrics["error_count"] += 1
+                    except Exception as e:
+                        logger.error(f"Error generating champion response for case {case_id}: {e}")
+                        batch_champ_responses[case_id] = ModelResponse(case_id, self.champion_endpoint.name, f"Error: Generation failed - {e}", 0)
+                        champion_metrics["error_count"] += 1
 
-                 # Challenger
-                 try:
-                      chall_resp = self.challenger_runner.generate(test_case)
-                      batch_chall_responses[case_id] = chall_resp
-                      challenger_metrics["total_latency"] += chall_resp.latency
-                      challenger_metrics["total_output_chars"] += len(chall_resp.output)
-                      if not chall_resp.output.startswith("Error:"): challenger_metrics["success_count"] += 1
-                      else: challenger_metrics["error_count"] += 1
-                 except Exception as e:
-                      logger.error(f"Error generating challenger response for case {case_id}: {e}")
-                      batch_chall_responses[case_id] = ModelResponse(case_id, self.challenger_endpoint.name, f"Error: Generation failed - {e}", 0)
-                      challenger_metrics["error_count"] += 1
+                    # Challenger
+                    try:
+                        chall_resp = self.challenger_runner.generate(test_case)
+                        batch_chall_responses[case_id] = chall_resp
+                        challenger_metrics["total_latency"] += chall_resp.latency
+                        challenger_metrics["total_output_chars"] += len(chall_resp.output)
+                        if not chall_resp.output.startswith("Error:"): challenger_metrics["success_count"] += 1
+                        else: challenger_metrics["error_count"] += 1
+                    except Exception as e:
+                        logger.error(f"Error generating challenger response for case {case_id}: {e}")
+                        batch_chall_responses[case_id] = ModelResponse(case_id, self.challenger_endpoint.name, f"Error: Generation failed - {e}", 0)
+                        challenger_metrics["error_count"] += 1
 
+                # 2. Evaluate with LM Judge
+                if progress is not None:
+                    progress((i + batch_size * 0.5) / num_cases, f"Evaluating Batch {batch_num}/{total_batches}")
 
-            # 2. Evaluate with LM Judge
-            if progress is not None:
-                progress((i + batch_size * 0.5) / num_cases, f"Evaluating Batch {batch_num}/{total_batches}")
+                # Flag to track if any response contains a trigger string
+                has_trigger_string = False
+                
+                for test_case in batch:
+                    case_id = test_case.id # Should have been set above
+                    champ_response = batch_champ_responses.get(case_id)
+                    chall_response = batch_chall_responses.get(case_id)
 
-            for test_case in batch:
-                 case_id = test_case.id # Should have been set above
-                 champ_response = batch_champ_responses.get(case_id)
-                 chall_response = batch_chall_responses.get(case_id)
+                    # Skip evaluation if either model failed catastrophically
+                    if not champ_response or not chall_response:
+                        logger.warning(f"Skipping evaluation for case {case_id} due to missing model response.")
+                        continue
 
-                 # Skip evaluation if either model failed catastrophically
-                 if not champ_response or not chall_response:
-                      logger.warning(f"Skipping evaluation for case {case_id} due to missing model response.")
-                      # Create a dummy evaluation result indicating failure? Or just skip? Let's skip.
-                      continue
+                    # Check for trigger strings in model responses if retry is configured
+                    if batch_retry_attempts > 0 and batch_retry_trigger_strings:
+                        for trigger in batch_retry_trigger_strings:
+                            if (trigger in champ_response.output or
+                                trigger in chall_response.output):
+                                logger.warning(f"Trigger string '{trigger}' found in responses for case {case_id}")
+                                has_trigger_string = True
+                                break
+                    
+                    # If we already found a trigger string and retries are enabled, we can skip further evaluations
+                    if has_trigger_string and retry_count < batch_retry_attempts:
+                        continue
 
-                 # If one model produced an error string but the other didn't, judge might still work
-                 # If both produced errors, evaluation is pointless
+                    try:
+                        start_time = time.time()
+                        evaluation_result = self.judge.evaluate(
+                            test_case,
+                            champ_response,
+                            chall_response,
+                        )
+                        judge_latency = time.time() - start_time
+                        judge_metrics["total_latency"] += judge_latency
+                        judge_metrics["total_output_chars"] += len(evaluation_result.reasoning) # Judge output length
+                        batch_eval_results.append(evaluation_result)
+                        
+                        # Check for trigger strings in judge reasoning
+                        if batch_retry_attempts > 0 and batch_retry_trigger_strings and not has_trigger_string:
+                            for trigger in batch_retry_trigger_strings:
+                                if trigger in evaluation_result.reasoning:
+                                    logger.warning(f"Trigger string '{trigger}' found in judge reasoning for case {case_id}")
+                                    has_trigger_string = True
+                                    break
+                        
+                        # Check if judge produced a valid verdict (not undetermined)
+                        if evaluation_result.winner != "UNDETERMINED": judge_metrics["success_count"] += 1
+                        else: judge_metrics["error_count"] += 1
 
-                 try:
-                      start_time = time.time()
-                      evaluation_result = self.judge.evaluate(
-                          test_case,
-                          champ_response,
-                          chall_response,
-                      )
-                      judge_latency = time.time() - start_time
-                      judge_metrics["total_latency"] += judge_latency
-                      judge_metrics["total_output_chars"] += len(evaluation_result.reasoning) # Judge output length
-                      batch_eval_results.append(evaluation_result)
-                      # Check if judge produced a valid verdict (not undetermined)
-                      if evaluation_result.winner != "UNDETERMINED": judge_metrics["success_count"] += 1
-                      else: judge_metrics["error_count"] += 1
+                    except Exception as e:
+                        logger.error(f"Error during judge evaluation for case {case_id}: {e}")
+                        # Create a placeholder eval result indicating judge failure
+                        batch_eval_results.append(EvaluationResult(
+                            test_id=case_id,
+                            champion_output=champ_response.output,
+                            challenger_output=chall_response.output,
+                            winner="JUDGE_ERROR",
+                            confidence=0.0,
+                            reasoning=f"Error: Judge evaluation failed - {e}"
+                        ))
+                        judge_metrics["error_count"] += 1
 
-                 except Exception as e:
-                      logger.error(f"Error during judge evaluation for case {case_id}: {e}")
-                      # Create a placeholder eval result indicating judge failure
-                      batch_eval_results.append(EvaluationResult(
-                           test_id=case_id,
-                           champion_output=champ_response.output,
-                           challenger_output=chall_response.output,
-                           winner="JUDGE_ERROR",
-                           confidence=0.0,
-                           reasoning=f"Error: Judge evaluation failed - {e}"
-                      ))
-                      judge_metrics["error_count"] += 1
-
-
-            all_evaluation_results.extend(batch_eval_results)
-
-            # Log batch summary (optional)
-            batch_summary = self.aggregator.aggregate(batch_eval_results)
-            logger.info(f"Batch {batch_num} summary: {batch_summary['verdict_counts']}")
-
+                # Determine if we need to retry this batch
+                if has_trigger_string and retry_count < batch_retry_attempts:
+                    logger.warning(f"Batch {batch_num} contains trigger strings. Retrying ({retry_count+1}/{batch_retry_attempts})...")
+                    # Log which trigger strings were found
+                    if batch_retry_trigger_strings:
+                        found_triggers = set()
+                        for case_id, champ_response in batch_champ_responses.items():
+                            for trigger in batch_retry_trigger_strings:
+                                if trigger in champ_response.output:
+                                    found_triggers.add(f"'{trigger}' in champion response for {case_id}")
+                        for case_id, chall_response in batch_chall_responses.items():
+                            for trigger in batch_retry_trigger_strings:
+                                if trigger in chall_response.output:
+                                    found_triggers.add(f"'{trigger}' in challenger response for {case_id}")
+                        for result in batch_eval_results:
+                            for trigger in batch_retry_trigger_strings:
+                                if trigger in result.reasoning:
+                                    found_triggers.add(f"'{trigger}' in judge reasoning for {result.test_id}")
+                        
+                        if found_triggers:
+                            logger.info(f"Trigger strings found in batch {batch_num}: {', '.join(found_triggers)}")
+                    
+                    retry_count += 1
+                    # Don't save results, we'll retry the batch
+                    continue
+                else:
+                    # Either no trigger strings found or we've exhausted retries
+                    batch_success = True
+                    all_evaluation_results.extend(batch_eval_results)
+                    
+                    # Log if we're accepting results after exhausting retries
+                    if has_trigger_string and retry_count >= batch_retry_attempts:
+                        logger.warning(f"Accepting batch {batch_num} results despite trigger strings after exhausting {batch_retry_attempts} retry attempts")
+                    
+                    # Log batch summary
+                    batch_summary = self.aggregator.aggregate(batch_eval_results)
+                    if retry_count > 0:
+                        logger.info(f"Batch {batch_num} completed after {retry_count} retries. Summary: {batch_summary['verdict_counts']}")
+                    else:
+                        logger.info(f"Batch {batch_num} summary: {batch_summary['verdict_counts']}")
 
         # 3. Aggregate final results
         aggregated_summary = self.aggregator.aggregate(all_evaluation_results)
@@ -1090,8 +1200,12 @@ def run_test_from_ui(
     # Test Data (2 inputs)
     test_data_file,
     test_data_text,
-    # Parameters (1 input)
+    # Parameters (5 inputs) - Updated to include batch retry parameters
     batch_size_input,
+    batch_retry_attempts_input,
+    batch_backoff_factor_input,
+    batch_max_wait_input,
+    batch_retry_trigger_strings_input,
     # Data Field Names (2 inputs) - Added
     key_field_name_input,
     value_field_name_input,
@@ -1101,6 +1215,8 @@ def run_test_from_ui(
     """
     Handles the logic for running the A/B test triggered by the Gradio UI button.
     """
+    global STOP_REQUESTED
+    STOP_REQUESTED = False # Reset stop flag at the beginning of each UI run
     logger.info("Starting test run from Gradio UI...")
     progress(0, desc="Initializing...")
 
@@ -1168,7 +1284,26 @@ def run_test_from_ui(
         logger.info(f"Running test with {len(test_cases)} cases, batch size {int(batch_size_input)}...")
         progress(0.3, desc="Running A/B test...")
         try:
-            results = tester.run_test(test_cases, batch_size=int(batch_size_input), progress=progress)
+            # Process batch retry parameters
+            batch_retry_attempts = int(batch_retry_attempts_input) if batch_retry_attempts_input is not None else 0
+            batch_backoff_factor = float(batch_backoff_factor_input) if batch_backoff_factor_input is not None else 2.0
+            batch_max_wait = int(batch_max_wait_input) if batch_max_wait_input is not None else 60
+            
+            # Process trigger strings (convert from comma-separated string to list)
+            batch_retry_trigger_strings = None
+            if batch_retry_trigger_strings_input and batch_retry_trigger_strings_input.strip():
+                batch_retry_trigger_strings = [s.strip() for s in batch_retry_trigger_strings_input.split(',') if s.strip()]
+                logger.info(f"Using batch retry trigger strings: {batch_retry_trigger_strings}")
+            
+            results = tester.run_test(
+                test_cases,
+                batch_size=int(batch_size_input),
+                progress=progress,
+                batch_retry_attempts=batch_retry_attempts,
+                batch_backoff_factor=batch_backoff_factor,
+                batch_max_wait=batch_max_wait,
+                batch_retry_trigger_strings=batch_retry_trigger_strings
+            )
         except Exception as e:
             logger.exception("An error occurred during ModelTester.run_test()")
             raise gr.Error(f"Test Execution Error: {e}")
@@ -1203,6 +1338,15 @@ def run_test_from_ui(
         error_message = f"An unexpected error occurred: {e}"
         error_df = pd.DataFrame([{"Error": error_message}])
         return error_message, error_df
+
+
+# Function to be called by the Stop button
+def request_stop():
+    global STOP_REQUESTED
+    STOP_REQUESTED = True
+    logger.warning("Stop requested via UI button.")
+    # Optionally provide feedback to the UI that stop was requested
+    # gr.Info("Stop request received. Finishing current batch...") # Requires Gradio 4+
 
 
 def create_ui():
@@ -1309,11 +1453,43 @@ def create_ui():
                     with gr.Column(scale=1):
                         gr.Markdown("### Test Parameters")
                         batch_size_input = gr.Number(label="Batch Size", value=5, precision=0)
+                        
+                        # Add batch retry parameters
+                        gr.Markdown("#### Batch Retry Settings")
+                        batch_retry_attempts_input = gr.Number(
+                            label="Batch Retry Attempts",
+                            value=0,
+                            precision=0,
+                            minimum=0,
+                            info="Number of times to retry a batch if trigger strings are found (0 = no retries)"
+                        )
+                        batch_backoff_factor_input = gr.Slider(
+                            label="Backoff Factor",
+                            value=2.0,
+                            minimum=1.0,
+                            maximum=5.0,
+                            step=0.1,
+                            info="Factor for exponential backoff between retries (e.g., 2.0 means wait times of 1s, 2s, 4s, 8s...)"
+                        )
+                        batch_max_wait_input = gr.Number(
+                            label="Maximum Wait Time (seconds)",
+                            value=60,
+                            precision=0,
+                            minimum=1,
+                            info="Maximum wait time between retries in seconds"
+                        )
+                        batch_retry_trigger_strings_input = gr.Textbox(
+                            label="Retry Trigger Strings",
+                            placeholder="Enter comma-separated strings that will trigger a retry when found in responses",
+                            info="Comma-separated list of strings that will trigger a batch retry when found in model responses or judge reasoning"
+                        )
                         # Add preprocessing options later if needed
 
             with gr.TabItem("Results"):
                 gr.Markdown("### Test Execution & Results")
-                run_button = gr.Button("Run A/B Test", variant="primary")
+                with gr.Row():
+                    run_button = gr.Button("Run A/B Test", variant="primary", scale=4)
+                    stop_button = gr.Button("Stop Test", variant="stop", scale=1) # Add stop button
                 with gr.Group(elem_classes="results-box"):
                      gr.Markdown("#### Summary")
                      summary_output = gr.Textbox(label="Overall Results", lines=10, show_copy_button=True)
@@ -1339,12 +1515,19 @@ def create_ui():
                 test_data_text,
                 # Parameters
                 batch_size_input,
+                batch_retry_attempts_input,
+                batch_backoff_factor_input,
+                batch_max_wait_input,
+                batch_retry_trigger_strings_input,
                 # Data Field Names - Added
                 key_field_name_input,
                 value_field_name_input
             ],
             outputs=[summary_output, details_output]
         )
+
+        # Wire the stop button
+        stop_button.click(fn=request_stop)
 
     return iface
 
@@ -1411,7 +1594,14 @@ def run_cli_test():
 
         logger.info(f"Running CLI test with {len(test_cases)} test cases...")
         # Run the test (batch size can be adjusted)
-        results = tester.run_test(test_cases, batch_size=2) # Using a small batch size for testing
+        results = tester.run_test(
+            test_cases,
+            batch_size=2, # Using a small batch size for testing
+            batch_retry_attempts=2, # Example: retry up to 2 times
+            batch_backoff_factor=2.0, # Example: exponential backoff with factor of 2
+            batch_max_wait=30, # Example: maximum wait time of 30 seconds
+            batch_retry_trigger_strings=["rate limit", "error", "timeout"] # Example trigger strings
+        )
 
         # --- Output Results ---
         logger.info("Test completed. Final Results:")
@@ -1477,5 +1667,19 @@ if __name__ == "__main__":
              logger.error("Failed to create Gradio UI.")
              print("Error: Could not create the Gradio UI.")
     else:
+        # Set up signal handler for CLI stop
+        def signal_handler(sig, frame):
+            global STOP_REQUESTED
+            if not STOP_REQUESTED:
+                print("\nCtrl+C detected. Requesting stop after current batch...")
+                logger.warning("Stop requested via Ctrl+C.")
+                STOP_REQUESTED = True
+            else:
+                print("\nCtrl+C detected again. Forcing exit.")
+                logger.error("Forced exit via second Ctrl+C.")
+                sys.exit(1) # Force exit on second Ctrl+C
+
+        signal.signal(signal.SIGINT, signal_handler)
+
         # Run the command-line test
         run_cli_test()
