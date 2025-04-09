@@ -1086,6 +1086,11 @@ class ModelTester:
 
                 # 1. Get responses from Champion and Challenger models for the current batch attempt
                 for batch_idx, test_case in enumerate(current_batch):
+                     # Check if stop requested before processing this case
+                     if STOP_REQUESTED:
+                         logger.warning(f"Stop requested. Skipping remaining cases in batch {batch_num}.")
+                         break # Exit the inner loop for this batch
+
                      # Generate a consistent ID if not present, using overall index 'i' + batch_idx
                      case_id = test_case.id or f"case-{i + batch_idx + 1}"
                      test_case.id = case_id # Ensure the test case object has the ID
@@ -1247,7 +1252,8 @@ class ModelTester:
         aggregated_summary = self.aggregator.aggregate(all_evaluation_results)
 
         # 4. Calculate final metrics (using totals accumulated across all attempts)
-        def calculate_avg_metrics(metrics, total_cases):
+        # Note: Parameter renamed from total_cases to processed_cases for clarity
+        def calculate_avg_metrics(metrics, processed_cases):
              # Base counts on total cases attempted, errors include generation/image load issues
              total_attempts = metrics["success_count"] + metrics["error_count"]
              # Avg latency based on total attempts where latency was recorded (excludes critical failures before generation)
@@ -1255,18 +1261,19 @@ class ModelTester:
              avg_latency = round(metrics["total_latency"] / valid_latency_runs, 2) if valid_latency_runs > 0 else 0
              # Avg chars based only on successful generations
              avg_chars = int(metrics["total_output_chars"] / metrics["success_count"]) if metrics["success_count"] > 0 else 0
-             # Success rate based on total test cases attempted
-             success_rate = round((metrics["success_count"] / total_cases) * 100, 1) if total_cases > 0 else 0
+             # Success rate based on total test cases *processed* before stopping
+             success_rate = round((metrics["success_count"] / processed_cases) * 100, 1) if processed_cases > 0 else 0
 
              return {
                  "avg_latency_s": avg_latency,
                  "avg_output_chars": avg_chars,
-                 "success_rate_pct": success_rate,
+                 "success_rate_pct": success_rate, # Now calculated based on processed cases
                  "errors": metrics["error_count"],
                  "image_load_errors": metrics.get("image_load_errors", 0)
              }
 
         # Use processed_case_count for denominators as it reflects actual attempts before potential early stopping
+        # Pass processed_case_count to the updated function parameter
         champion_avg_metrics = calculate_avg_metrics(champion_metrics, processed_case_count)
         challenger_avg_metrics = calculate_avg_metrics(challenger_metrics, processed_case_count)
         # Judge metrics are based on cases where evaluation was attempted
@@ -1682,20 +1689,30 @@ def run_test_from_ui(
         summary_output = format_summary_output(results.get("summary", {}))
         # Convert raw evaluations (list of dicts) to DataFrame
         raw_evals = results.get("evaluations", [])
-        if raw_evals:
-             # Select and reorder columns for better display
-             display_columns = ['test_id', 'winner', 'confidence', 'champion_output', 'challenger_output', 'reasoning']
-             try:
-                  details_df = pd.DataFrame(raw_evals)
-                  # Ensure all expected columns exist, add if missing
-                  for col in display_columns:
-                       if col not in details_df.columns:
-                            details_df[col] = None # Add column with None if missing
-                  details_df = details_df[display_columns] # Reorder/select
-             except Exception as df_err:
-                  logger.error(f"Error creating DataFrame from results: {df_err}")
-                  summary_output += f"\n\nError displaying detailed results: {df_err}"
-                  details_df = pd.DataFrame(columns=display_columns) # Empty DF on error
+        display_columns = ['test_id', 'winner', 'confidence', 'champion_output', 'challenger_output', 'reasoning']
+
+        try:
+            if raw_evals:
+                 details_df = pd.DataFrame(raw_evals)
+                 # Check if DataFrame is empty (can happen if raw_evals contains only empty dicts, though unlikely)
+                 if not details_df.empty:
+                     # Ensure all expected columns exist, add if missing
+                     for col in display_columns:
+                          if col not in details_df.columns:
+                               details_df[col] = None # Add column with None if missing
+                     details_df = details_df[display_columns] # Reorder/select
+                 else:
+                      # If DataFrame created from non-empty raw_evals is still empty
+                      details_df = pd.DataFrame(columns=display_columns)
+            else:
+                 # Handle case where raw_evals list itself is empty
+                 details_df = pd.DataFrame(columns=display_columns) # Empty DF with headers
+                 summary_output += "\n\nNote: No evaluation results were generated."
+
+        except Exception as df_err:
+            logger.error(f"Error creating or processing DataFrame from results: {df_err}")
+            summary_output += f"\n\nError displaying detailed results: {df_err}"
+            details_df = pd.DataFrame(columns=display_columns) # Empty DF on error
         else:
              # Handle case where no evaluations were produced (e.g., all failed/skipped)
              details_df = pd.DataFrame(columns=display_columns) # Empty DF with headers
@@ -1885,7 +1902,7 @@ def create_ui():
                         )
                         # Add preprocessing options later if needed
 
-            with gr.TabItem("Results"):
+            with gr.TabItem("Monitoring"):
                 gr.Markdown("### Test Execution & Results")
                 with gr.Row():
                     run_button = gr.Button("Run A/B Test", variant="primary", scale=4)
