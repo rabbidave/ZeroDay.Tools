@@ -1,10 +1,116 @@
+
 import sys
+import os
+import venv
+import subprocess
+import signal # Added for CLI stop handling
+
+# --- Venv Setup ---
+# Determine if we need to set up or reactivate the virtual environment
+
+VENV_DIR = ".venv"
+REQUIRED_PACKAGES = [
+    "gradio",
+    "pandas",
+    "requests",
+    "tenacity",
+    "Pillow", # For image handling (needed for dummy image in CLI test)
+    "python-dotenv", # Often useful, though not strictly required by current code
+]
+
+def ensure_venv():
+    """Checks for venv, creates/installs if needed, and re-executes if not active."""
+    venv_path = os.path.abspath(VENV_DIR)
+    # Check if the current Python executable is from the target venv
+    is_in_venv = sys.prefix == venv_path
+    venv_exists = os.path.isdir(venv_path)
+
+    if is_in_venv:
+        # Already running in the correct venv, proceed
+        print(f"Running inside the '{VENV_DIR}' virtual environment.")
+        return True # Indicate we are ready to proceed
+
+    print(f"Not running inside the target '{VENV_DIR}' virtual environment.")
+
+    if not venv_exists:
+        print(f"Creating virtual environment in '{venv_path}'...")
+        try:
+            venv.create(venv_path, with_pip=True)
+            print("Virtual environment created successfully.")
+        except Exception as e:
+            print(f"Error creating virtual environment: {e}", file=sys.stderr)
+            sys.exit(1) # Exit if creation fails
+
+    # Determine the Python executable path within the venv
+    if sys.platform == "win32":
+        python_executable = os.path.join(venv_path, "Scripts", "python.exe")
+        pip_executable = os.path.join(venv_path, "Scripts", "pip.exe")
+    else:
+        python_executable = os.path.join(venv_path, "bin", "python")
+        pip_executable = os.path.join(venv_path, "bin", "pip")
+
+    if not os.path.exists(python_executable):
+        print(f"Error: Python executable not found at '{python_executable}'. Venv creation might have failed.", file=sys.stderr)
+        sys.exit(1)
+    if not os.path.exists(pip_executable):
+        print(f"Error: Pip executable not found at '{pip_executable}'. Venv creation might have failed.", file=sys.stderr)
+        sys.exit(1)
+
+
+    # Install requirements into the venv using pip from the venv
+    print(f"Installing/checking required packages in '{venv_path}'...")
+    install_command = [pip_executable, "install"] + REQUIRED_PACKAGES
+    try:
+        # Run pip install, capture output for clarity/debugging
+        result = subprocess.run(install_command, check=True, capture_output=True, text=True, encoding='utf-8')
+        print("Packages installed/verified successfully.")
+        # print(result.stdout) # Uncomment to see pip output
+        if result.stderr:
+            # Show pip's stderr for warnings etc.
+            print("--- pip stderr ---\n", result.stderr, "\n--- end pip stderr ---")
+    except subprocess.CalledProcessError as e:
+        print(f"Error installing packages using command: {' '.join(e.cmd)}", file=sys.stderr)
+        print(f"Pip stdout:\n{e.stdout}", file=sys.stderr)
+        print(f"Pip stderr:\n{e.stderr}", file=sys.stderr)
+        sys.exit(1) # Exit if installation fails
+    except Exception as e:
+        print(f"An unexpected error occurred during package installation: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+    # Re-execute the script using the venv's Python interpreter
+    print(f"\nRestarting script using Python from '{venv_path}'...\n{'='*20}\n")
+    script_path = os.path.abspath(sys.argv[0])
+    # os.execv replaces the current process, inheriting stdio etc.
+    # Arguments must include the executable name as argv[0] for the new process
+    try:
+        os.execv(python_executable, [python_executable, script_path] + sys.argv[1:])
+        # If execv is successful, this line is never reached
+    except OSError as e:
+        print(f"Error restarting script with '{python_executable}': {e}", file=sys.stderr)
+        # Fallback attempt with subprocess if execv fails (less ideal)
+        print("Attempting restart with subprocess as fallback...")
+        try:
+            subprocess.check_call([python_executable, script_path] + sys.argv[1:])
+            sys.exit(0) # Exit cleanly if subprocess worked
+        except Exception as sub_e:
+            print(f"Subprocess restart also failed: {sub_e}", file=sys.stderr)
+            sys.exit(1)
+    except Exception as e:
+        print(f"Unexpected error during script restart: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    # This should not be reached if re-execution happens
+    return False # Indicate re-execution was attempted
+
+# --- Original Script Imports (ensure they are accessible after venv check) ---
+# It's generally okay to keep imports here, as the script restarts if not in venv
 import gradio as gr
 import json
 import logging
 import time
 import pandas as pd
-import os
+# import os # Already imported above
 import re
 import requests
 from dataclasses import dataclass, field
@@ -13,8 +119,9 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 import csv
 import io
 from urllib.parse import urlparse
-
-import signal # Added for CLI stop handling
+import base64
+import mimetypes
+# import signal # Already imported above
 
 # Configure logging
 logging.basicConfig(
@@ -23,13 +130,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger("model_tester")
 
-
 @dataclass
 class ModelEndpoint:
     """Simple model endpoint configuration."""
     name: str
     api_url: str
-    api_key: str
+    api_key: Optional[str] # API key can be optional (e.g., for local Ollama)
     model_id: str
     max_tokens: int = 1024
     temperature: float = 0.0
@@ -44,14 +150,13 @@ class ModelEndpoint:
             "temperature": self.temperature,
         }
 
-
 @dataclass
 class TestCase:
     """Test case containing a key to query and actual value for evaluation."""
     key: str # The input/prompt for the model
     value: str # The reference value/ground truth
+    image_path_or_url: Optional[str] = None # Path or URL to an image for multimodal input
     id: Optional[str] = None # Unique ID for the test case
-
 
 @dataclass
 class ModelResponse:
@@ -60,7 +165,6 @@ class ModelResponse:
     model_name: str
     output: str
     latency: float
-
 
 @dataclass
 class EvaluationResult:
@@ -71,7 +175,6 @@ class EvaluationResult:
     winner: str  # "MODEL_A_WINS", "MODEL_B_WINS", or "TIE" (extracted from reasoning)
     confidence: float # Extracted confidence score (e.g., 4/5 -> 0.8)
     reasoning: str # Full response from the judge model
-
 
 # Global preprocessing settings (can be updated through UI)
 PREPROCESS_ENABLED = True
@@ -130,7 +233,6 @@ def preprocess_text(text, max_length=None, remove_special_chars=None, normalize_
     return text
 
 # --- Model Runner Class ---
-# (No changes needed in ModelRunner, LMJudge, ResultAggregator, ModelTester core logic)
 class ModelRunner:
     """Handles model API calls."""
 
@@ -138,13 +240,51 @@ class ModelRunner:
         self.endpoint = endpoint
         self.prompt_template = prompt_template
 
+    def _load_and_encode_image(self, image_path_or_url: str) -> Tuple[Optional[str], Optional[str]]:
+        """Loads image from path/URL and returns (base64_string, mime_type) or (None, None)."""
+        try:
+            image_bytes = None
+            if urlparse(image_path_or_url).scheme in ['http', 'https']:
+                logger.info(f"Downloading image from URL: {image_path_or_url}")
+                response = requests.get(image_path_or_url, stream=True, timeout=20) # Increased timeout
+                response.raise_for_status()
+                image_bytes = response.content
+                # Try to get mime type from headers first
+                mime_type = response.headers.get('content-type')
+            else:
+                logger.info(f"Reading image from local path: {image_path_or_url}")
+                if not os.path.exists(image_path_or_url):
+                    raise FileNotFoundError(f"Image file not found at path: {image_path_or_url}")
+                with open(image_path_or_url, "rb") as f:
+                    image_bytes = f.read()
+                mime_type, _ = mimetypes.guess_type(image_path_or_url)
+
+            if not image_bytes:
+                 raise ValueError("Failed to load image bytes.")
+
+            mime_type = mime_type or 'image/jpeg' # Default if guess fails or not available
+            base64_image = base64.b64encode(image_bytes).decode('utf-8')
+            logger.info(f"Successfully loaded and encoded image from {image_path_or_url[:50]}... Type: {mime_type}, Size: {len(base64_image)} chars base64")
+            return base64_image, mime_type
+        except FileNotFoundError:
+            logger.error(f"Image file not found: {image_path_or_url}")
+            return None, None
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Failed to download image from URL {image_path_or_url}: {e}")
+            return None, None
+        except Exception as e:
+            logger.error(f"Failed to load or encode image {image_path_or_url}: {e}")
+            return None, None
+
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=2, max=10),
     )
     def generate(self, test_case: TestCase) -> ModelResponse:
-        """Call the model API with the test case."""
+        """Call the model API with the test case, potentially including an image."""
         start_time = time.time()
+        base64_image = None
+        mime_type = None
 
         try:
             # Preprocess the input key using the global settings
@@ -154,7 +294,7 @@ class ModelRunner:
             prompt = ""
             try:
                 # For judge prompts, the "key" is already the full prompt
-                if test_case.id and test_case.id.startswith("judge_"):
+                if test_case.id and test_case.id.startswith("judge"):
                     prompt = preprocessed_key # Use directly, assume already preprocessed if needed
                 else:
                     # Use simple replacement first, escaping existing braces in the key
@@ -168,6 +308,15 @@ class ModelRunner:
                       logger.error(f"Error formatting prompt template: {str(e2)}. Using concatenation.")
                       prompt = f"{self.prompt_template}\n\nINPUT: {preprocessed_key}"
 
+            # --- Multimodal Input Handling ---
+            if test_case.image_path_or_url:
+                logger.info(f"Test case {test_case.id} includes image: {test_case.image_path_or_url}")
+                base64_image, mime_type = self._load_and_encode_image(test_case.image_path_or_url)
+                if base64_image is None:
+                    # Handle image loading failure - return an error response
+                    logger.error(f"Failed to load image for test case {test_case.id}. Returning error.")
+                    return ModelResponse(test_id=test_case.id or "unknown", model_name=self.endpoint.name, output=f"Error: Failed to load image {test_case.image_path_or_url}", latency=time.time() - start_time)
+
             # Determine API type and make appropriate call
             response_text = ""
             api_url_lower = self.endpoint.api_url.lower() if self.endpoint.api_url else ""
@@ -177,36 +326,50 @@ class ModelRunner:
                 is_openai_compatible = "/v1/chat/completions" in api_url_lower or \
                                         "openai" in api_url_lower or \
                                         "openrouter.ai" in api_url_lower or \
+                                        "mistral" in api_url_lower or \
+                                        "together.ai" in api_url_lower or \
+                                        "groq.com" in api_url_lower or \
+                                        "fireworks.ai" in api_url_lower or \
+                                        "deepinfra.com" in api_url_lower or \
                                         "lmstudio.ai" in api_url_lower or \
                                         ":1234/v1" in api_url_lower # Common LM Studio port
 
                 is_anthropic_compatible = "/v1/messages" in api_url_lower or "anthropic" in api_url_lower
                 is_gemini = "generativelanguage.googleapis.com" in api_url_lower
-                is_ollama = "ollama" in api_url_lower and "/api/generate" in api_url_lower
+                # Check for local Ollama or URLs containing 'ollama' with the generate path
+                is_ollama = ("/api/generate" in api_url_lower and \
+                             ("localhost:11434" in api_url_lower or "127.0.0.1:11434" in api_url_lower)) or \
+                            ("ollama" in api_url_lower and "/api/generate" in api_url_lower)
 
                 if is_openai_compatible:
-                    response_text = self._call_openai_compatible_api(prompt)
+                    response_text = self._call_openai_compatible_api(prompt, base64_image, mime_type)
                 elif is_anthropic_compatible:
-                    response_text = self._call_anthropic_api(prompt)
+                    response_text = self._call_anthropic_api(prompt, base64_image, mime_type)
                 elif is_gemini:
-                     response_text = self._call_gemini_api(prompt)
+                     response_text = self._call_gemini_api(prompt, base64_image, mime_type)
                 elif is_ollama:
-                    response_text = self._call_ollama_api(prompt)
+                    # Ollama's generate endpoint currently only supports images via 'images' field
+                    response_text = self._call_ollama_api(prompt, base64_image) # Ollama doesn't need mime type separately in payload
                 else:
-                    # Fallback to generic or attempt intelligent guess
-                    logger.warning(f"Could not determine API type for {self.endpoint.api_url}. Attempting generic call.")
-                    response_text = self._call_generic_api(prompt) # Or try OpenAI as a default?
+                    # Fallback to generic or attempt intelligent guess (assume text-only for fallback)
+                    if base64_image:
+                         logger.warning(f"Could not determine API type for {self.endpoint.api_url} with multimodal input. Attempting generic text-only call.")
+                         response_text = self._call_generic_api(prompt) # Fallback without image
+                    else:
+                         logger.warning(f"Could not determine API type for {self.endpoint.api_url}. Attempting generic call.")
+                         response_text = self._call_generic_api(prompt)
 
             except requests.exceptions.RequestException as req_err:
                  logger.error(f"API request failed for {self.endpoint.name}: {req_err}")
+                 if hasattr(req_err, 'response') and req_err.response is not None:
+                     logger.error(f"Response status: {req_err.response.status_code}, Response text: {req_err.response.text[:500]}")
                  response_text = f"Error: API request failed. Details: {str(req_err)}"
-            except (KeyError, IndexError, TypeError, json.JSONDecodeError) as parse_err:
-                 logger.error(f"Failed to parse response from {self.endpoint.name}: {parse_err}")
+            except (KeyError, IndexError, TypeError, json.JSONDecodeError, ValueError) as parse_err:
+                 logger.error(f"Failed to parse response or invalid response structure from {self.endpoint.name}: {parse_err}")
                  response_text = f"Error: Failed to parse API response. Details: {str(parse_err)}"
             except Exception as e:
-                logger.error(f"Unexpected error calling API for {self.endpoint.name}: {str(e)}")
+                logger.error(f"Unexpected error calling API for {self.endpoint.name}: {str(e)}", exc_info=True)
                 response_text = f"Error: An unexpected error occurred. Details: {str(e)}"
-
 
             end_time = time.time()
 
@@ -217,137 +380,297 @@ class ModelRunner:
                 latency=end_time - start_time,
             )
         except Exception as e:
-            logger.error(f"Unexpected error in generate method for {self.endpoint.name}: {str(e)}")
+            logger.error(f"Unexpected error in generate method for {self.endpoint.name}: {str(e)}", exc_info=True)
             # Re-raise to trigger tenacity retry
             raise
 
     def _prepare_headers(self):
         """Prepares common headers, including Authorization if API key exists."""
         headers = {"Content-Type": "application/json"}
+        # Only add Authorization header if api_key is present and not empty
         if self.endpoint.api_key and self.endpoint.api_key.strip():
             headers["Authorization"] = f"Bearer {self.endpoint.api_key}"
 
         # Add OpenRouter specific headers if applicable
-        if "openrouter.ai" in self.endpoint.api_url.lower():
+        if self.endpoint.api_url and "openrouter.ai" in self.endpoint.api_url.lower():
              # These might be optional now, but good practice
              headers["HTTP-Referer"] = "http://localhost" # Can be anything, localhost is common
              headers["X-Title"] = "Model A/B Testing Tool"
         return headers
 
-    def _call_openai_compatible_api(self, prompt: str) -> str:
-        """Calls APIs following the OpenAI chat completions format."""
+    def _call_openai_compatible_api(self, prompt: str, image_base64: Optional[str] = None, mime_type: Optional[str] = None) -> str:
+        """Calls APIs following the OpenAI chat completions format (including multimodal)."""
         logger.info(f"Calling OpenAI-compatible API: {self.endpoint.api_url} for model {self.endpoint.model_id}")
         headers = self._prepare_headers()
+
+        # Construct messages payload - handling multimodal input
+        messages = []
+        if image_base64:
+            logger.info("Constructing OpenAI multimodal payload.")
+            # Ensure mime_type is set, default if necessary
+            mime_type = mime_type or 'image/jpeg'
+            messages.append({
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{mime_type};base64,{image_base64}"}
+                    }
+                ]
+            })
+        else:
+            # Text-only payload
+            logger.info("Constructing OpenAI text-only payload.")
+            messages.append({"role": "user", "content": prompt})
+
         data = {
             "model": self.endpoint.model_id,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": messages,
             "max_tokens": self.endpoint.max_tokens,
             "temperature": self.endpoint.temperature,
         }
         try:
-            response = requests.post(self.endpoint.api_url, headers=headers, json=data, timeout=120)
-            response.raise_for_status()
+            # Log payload size for debugging potential issues
+            payload_size_kb = len(json.dumps(data)) / 1024
+            logger.info(f"Sending OpenAI-compatible request. Payload size: {payload_size_kb:.2f} KB")
+            if payload_size_kb > 4000: # Log warning for potentially large payloads
+                logger.warning(f"Payload size ({payload_size_kb:.2f} KB) is large, may exceed limits.")
+
+            response = requests.post(self.endpoint.api_url, headers=headers, json=data, timeout=180) # Increased timeout for multimodal
+            response.raise_for_status() # Raises HTTPError for bad responses (4xx or 5xx)
             result = response.json()
             if not result.get("choices"):
                  raise ValueError(f"Invalid response format: 'choices' key missing or empty. Response: {result}")
+            if not result["choices"][0].get("message"):
+                 raise ValueError(f"Invalid response format: 'message' key missing in first choice. Response: {result}")
+            if result["choices"][0]["message"].get("content") is None:
+                 logger.warning(f"Response content is null for model {self.endpoint.model_id}. Check finish reason: {result['choices'][0].get('finish_reason')}")
+                 return f"Error: Response content was null (Finish Reason: {result['choices'][0].get('finish_reason')})"
             return result["choices"][0]["message"]["content"]
         except requests.exceptions.RequestException as e:
             logger.error(f"OpenAI-compatible request failed: {str(e)}")
-            if hasattr(e, 'response') and e.response is not None: logger.error(f"Response content: {e.response.text}")
+            if hasattr(e, 'response') and e.response is not None: logger.error(f"Response content: {e.response.text[:500]}")
             raise
         except (KeyError, IndexError, ValueError) as e:
             logger.error(f"Failed to parse OpenAI-compatible response: {str(e)}")
             logger.error(f"Full response: {result if 'result' in locals() else 'Response not available'}")
             raise
 
-    def _call_anthropic_api(self, prompt: str) -> str:
-        """Calls the Anthropic messages API."""
+    def _call_anthropic_api(self, prompt: str, image_base64: Optional[str] = None, mime_type: Optional[str] = None) -> str:
+        """Calls the Anthropic messages API (including multimodal)."""
         logger.info(f"Calling Anthropic API: {self.endpoint.api_url} for model {self.endpoint.model_id}")
         headers = self._prepare_headers()
         # Anthropic requires API key via header, not Bearer token
         if "Authorization" in headers: del headers["Authorization"]
         if self.endpoint.api_key: headers["x-api-key"] = self.endpoint.api_key
+        else: raise ValueError("Anthropic API key is required but not provided.")
         headers["anthropic-version"] = "2023-06-01" # Required header
+
+        # Construct messages payload - handling multimodal input
+        messages = []
+        content = []
+        content.append({"type": "text", "text": prompt})
+
+        if image_base64:
+            logger.info("Constructing Anthropic multimodal payload.")
+            # Ensure mime_type is set, default if necessary
+            mime_type = mime_type or 'image/jpeg'
+            # Check common image types supported by Claude
+            supported_mime_types = ['image/jpeg', 'image/png', 'image/gif', 'image/webp']
+            if mime_type not in supported_mime_types:
+                 logger.warning(f"MIME type '{mime_type}' may not be directly supported by Claude. Using it anyway.")
+            content.append({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": mime_type,
+                    "data": image_base64
+                }
+            })
+        else:
+            logger.info("Constructing Anthropic text-only payload.")
+
+        messages.append({
+            "role": "user",
+            "content": content
+        })
 
         data = {
             "model": self.endpoint.model_id,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": messages,
             "max_tokens": self.endpoint.max_tokens,
             "temperature": self.endpoint.temperature,
         }
         try:
-            response = requests.post(self.endpoint.api_url, headers=headers, json=data, timeout=120)
+            # Log payload size
+            payload_size_kb = len(json.dumps(data)) / 1024
+            logger.info(f"Sending Anthropic request. Payload size: {payload_size_kb:.2f} KB")
+
+            response = requests.post(self.endpoint.api_url, headers=headers, json=data, timeout=180) # Increased timeout
             response.raise_for_status()
             result = response.json()
             if not result.get("content"):
                  raise ValueError(f"Invalid response format: 'content' key missing or empty. Response: {result}")
-            # Assuming the first content block is the text response
-            return result["content"][0]["text"]
+            # Find the first text block in the response content array
+            text_content = ""
+            for block in result.get("content", []):
+                 if block.get("type") == "text":
+                      text_content = block.get("text", "")
+                      break
+            if not text_content and result.get("stop_reason") == "max_tokens":
+                 logger.warning("Anthropic response had no text content and hit max_tokens.")
+                 return "[Reached Max Tokens - No text content returned]"
+            elif not text_content:
+                 logger.warning(f"Anthropic response had no text block. Full response: {result}")
+                 return "[No text content found in response]"
+            return text_content
         except requests.exceptions.RequestException as e:
             logger.error(f"Anthropic request failed: {str(e)}")
-            if hasattr(e, 'response') and e.response is not None: logger.error(f"Response content: {e.response.text}")
+            if hasattr(e, 'response') and e.response is not None: logger.error(f"Response content: {e.response.text[:500]}")
             raise
         except (KeyError, IndexError, ValueError) as e:
             logger.error(f"Failed to parse Anthropic response: {str(e)}")
             logger.error(f"Full response: {result if 'result' in locals() else 'Response not available'}")
             raise
 
-    def _call_ollama_api(self, prompt: str) -> str:
-        """Calls the Ollama generate API."""
+    def _call_ollama_api(self, prompt: str, image_base64: Optional[str] = None) -> str:
+        """Calls the Ollama generate API (including multimodal image support)."""
         logger.info(f"Calling Ollama API: {self.endpoint.api_url} for model {self.endpoint.model_id}")
-        # Ollama doesn't use API keys or standard headers
+        # Ollama doesn't use API keys or standard Bearer tokens via this endpoint
         headers = {"Content-Type": "application/json"}
+
         data = {
             "model": self.endpoint.model_id,
             "prompt": prompt,
             "stream": False, # Ensure we get the full response at once
             "options": {
                 "temperature": self.endpoint.temperature,
-                # Ollama might not support max_tokens directly in generate,
-                # it's often part of model parameters or uses context window limits.
-                # "num_predict": self.endpoint.max_tokens # Common parameter name for max tokens
+                # Add num_predict if max_tokens is set and > 0
+                # Ollama might ignore it if the model doesn't support it well
+                 **({"num_predict": self.endpoint.max_tokens} if self.endpoint.max_tokens > 0 else {})
             }
         }
+
+        # Add image data if provided
+        if image_base64:
+            logger.info(f"Adding base64 image to Ollama request for model {self.endpoint.model_id}")
+            # Ollama expects a list of base64 encoded images
+            data["images"] = [image_base64]
+            logger.info("Constructing Ollama multimodal payload.")
+        else:
+             logger.info("Constructing Ollama text-only payload.")
+
         try:
-            response = requests.post(self.endpoint.api_url, headers=headers, json=data, timeout=180) # Longer timeout for local models
+            # Log payload size
+            payload_size_kb = len(json.dumps(data)) / 1024 # Approximate size
+            logger.info(f"Sending Ollama request. Payload size: {payload_size_kb:.2f} KB")
+
+            response = requests.post(self.endpoint.api_url, headers=headers, json=data, timeout=300) # Longer timeout for local/potentially slow models
             response.raise_for_status()
             result = response.json()
-            if "response" not in result:
-                 raise ValueError(f"Invalid response format: 'response' key missing. Response: {result}")
-            return result["response"]
+
+            # Check for standard response field
+            if "response" in result:
+                return result["response"]
+            # Check for potential error field (Ollama might return error this way)
+            elif "error" in result:
+                logger.error(f"Ollama API returned an error: {result['error']}")
+                raise ValueError(f"Ollama API Error: {result['error']}")
+            else:
+                 # Handle cases where the response might be different (e.g., streaming was accidentally left on)
+                 # For non-streaming, the expected key is 'response'. If it's missing, it's an issue.
+                 raise ValueError(f"Invalid response format: 'response' key missing and no 'error' key. Response: {result}")
+
         except requests.exceptions.RequestException as e:
             logger.error(f"Ollama request failed: {str(e)}")
-            if hasattr(e, 'response') and e.response is not None: logger.error(f"Response content: {e.response.text}")
+            if hasattr(e, 'response') and e.response is not None: logger.error(f"Response content: {e.response.text[:500]}")
             raise
         except (KeyError, ValueError) as e:
-            logger.error(f"Failed to parse Ollama response: {str(e)}")
+            logger.error(f"Failed to parse Ollama response or invalid response structure: {str(e)}")
             logger.error(f"Full response: {result if 'result' in locals() else 'Response not available'}")
             raise
 
-    def _call_gemini_api(self, prompt: str) -> str:
-        """Calls the Google Gemini API."""
+    def _call_gemini_api(self, prompt: str, image_base64: Optional[str] = None, mime_type: Optional[str] = None) -> str:
+        """Calls the Google Gemini API (including multimodal)."""
         logger.info(f"Calling Gemini API for model {self.endpoint.model_id}")
+        if not self.endpoint.api_key:
+             raise ValueError("Gemini API key is required but not provided.")
         # Gemini uses API key in the URL usually
         api_url = f"{self.endpoint.api_url}?key={self.endpoint.api_key}"
         headers = {"Content-Type": "application/json"}
+
+        # Construct parts payload - handling multimodal input
+        parts = []
+        parts.append({"text": prompt})
+
+        if image_base64:
+            logger.info("Constructing Gemini multimodal payload.")
+            # Ensure mime_type is set, default if necessary
+            mime_type = mime_type or 'image/jpeg'
+            parts.append({
+                "inline_data": {
+                    "mime_type": mime_type,
+                    "data": image_base64
+                }
+            })
+        else:
+             logger.info("Constructing Gemini text-only payload.")
+
         data = {
-            "contents": [{"parts": [{"text": prompt}]}],
+            "contents": [{"parts": parts}],
             "generationConfig": {
                 "temperature": self.endpoint.temperature,
                 "maxOutputTokens": self.endpoint.max_tokens,
+                # Add safety settings if needed, e.g., "safetySettings": [{"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"}]
             }
         }
         try:
-            response = requests.post(api_url, headers=headers, json=data, timeout=120)
+            # Log payload size
+            payload_size_kb = len(json.dumps(data)) / 1024
+            logger.info(f"Sending Gemini request. Payload size: {payload_size_kb:.2f} KB")
+
+            response = requests.post(api_url, headers=headers, json=data, timeout=180) # Increased timeout
             response.raise_for_status()
             result = response.json()
-            # Navigate the Gemini response structure
-            if not result.get("candidates") or not result["candidates"][0].get("content") or not result["candidates"][0]["content"].get("parts"):
-                 raise ValueError(f"Invalid response format. Response: {result}")
-            return result["candidates"][0]["content"]["parts"][0]["text"]
+
+            # Navigate the Gemini response structure carefully
+            if not result.get("candidates"):
+                # Check for promptFeedback for block reasons
+                if result.get("promptFeedback", {}).get("blockReason"):
+                    block_reason = result["promptFeedback"]["blockReason"]
+                    logger.error(f"Gemini API blocked the prompt. Reason: {block_reason}")
+                    return f"Error: Prompt blocked by API - {block_reason}"
+                raise ValueError(f"Invalid response format: 'candidates' key missing or empty. Response: {result}")
+
+            candidate = result["candidates"][0]
+            if not candidate.get("content") or not candidate["content"].get("parts"):
+                 # Check finishReason
+                 finish_reason = candidate.get("finishReason")
+                 if finish_reason and finish_reason != "STOP":
+                     logger.error(f"Gemini generation stopped unexpectedly. Reason: {finish_reason}")
+                     # Check safetyRatings if stopped for safety
+                     safety_ratings = candidate.get("safetyRatings")
+                     if safety_ratings:
+                         logger.error(f"Safety Ratings: {safety_ratings}")
+                     return f"Error: Generation stopped - {finish_reason}"
+                 raise ValueError(f"Invalid response format: 'content' or 'parts' missing. Finish Reason: {finish_reason}. Response: {result}")
+
+            # Find the text part in the response
+            text_response = ""
+            for part in candidate["content"]["parts"]:
+                if "text" in part:
+                    text_response += part["text"] # Concatenate if multiple text parts exist
+
+            if not text_response and candidate.get("finishReason") != "STOP":
+                 logger.warning(f"Gemini response had no text part. Finish Reason: {candidate.get('finishReason')}. Full response: {result}")
+                 return f"[No text content found in response - Finish Reason: {candidate.get('finishReason')}]"
+
+            return text_response
+
         except requests.exceptions.RequestException as e:
             logger.error(f"Gemini request failed: {str(e)}")
-            if hasattr(e, 'response') and e.response is not None: logger.error(f"Response content: {e.response.text}")
+            if hasattr(e, 'response') and e.response is not None: logger.error(f"Response content: {e.response.text[:500]}")
             raise
         except (KeyError, IndexError, ValueError) as e:
             logger.error(f"Failed to parse Gemini response: {str(e)}")
@@ -355,15 +678,14 @@ class ModelRunner:
             raise
 
     def _call_generic_api(self, prompt: str) -> str:
-        """Attempts a generic POST request, assuming OpenAI-like structure as a guess."""
-        logger.warning(f"Attempting generic API call (assuming OpenAI format) to: {self.endpoint.api_url}")
+        """Attempts a generic POST request, assuming OpenAI-like structure as a guess (text-only)."""
+        logger.warning(f"Attempting generic API call (assuming OpenAI text-only format) to: {self.endpoint.api_url}")
         try:
-            # Try OpenAI format as the most common fallback
-            return self._call_openai_compatible_api(prompt)
+            # Try OpenAI text-only format as the most common fallback
+            return self._call_openai_compatible_api(prompt) # Will call with image=None
         except Exception as e:
             logger.error(f"Generic API call failed: {str(e)}. Returning error message.")
             return f"Error: Failed to call or parse response from generic API endpoint {self.endpoint.api_url}. Please check configuration and API documentation. Details: {str(e)}"
-
 
 class LMJudge:
     """Uses a language model to judge between champion and challenger outputs."""
@@ -374,20 +696,18 @@ class LMJudge:
 You are evaluating two AI model responses based on the input query and potentially a reference value.
 
 ## Input Query
-```
+
 {key}
-```
+
 {reference_section}
 
 ## Model A (Champion: {champion_name}) Response
-```
+
 {champion_output}
-```
 
 ## Model B (Challenger: {challenger_name}) Response
-```
+
 {challenger_output}
-```
 
 ## Evaluation Instructions
 Compare Model A and Model B based on the Input Query{reference_value_instruction}. Consider:
@@ -420,6 +740,7 @@ CONFIDENCE: 4/5
         self.evaluation_prompt_template = evaluation_prompt_template
         # The judge runner uses a simple placeholder template, as the full prompt
         # is formatted within the evaluate method before being passed as the 'key'.
+        # Judge model is assumed to be text-only for evaluation.
         self.model_runner = ModelRunner(endpoint, "{key}") # Pass-through template
 
     def evaluate(
@@ -431,6 +752,7 @@ CONFIDENCE: 4/5
         """Evaluate champion vs challenger outputs using a dynamically built prompt."""
         # Preprocess all inputs to ensure they're clean strings
         # Use the same preprocess_text function for consistency
+        # Note: We don't pass the image to the judge, only the text inputs/outputs.
         preprocessed_key = preprocess_text(test_case.key)
         preprocessed_value = preprocess_text(test_case.value) # Preprocess reference value too
         preprocessed_champion = preprocess_text(champion_response.output)
@@ -438,7 +760,7 @@ CONFIDENCE: 4/5
 
         # Prepare context for the evaluation prompt template
         has_reference = bool(preprocessed_value)
-        reference_section_text = f"\n## Reference Value\n```\n{preprocessed_value}\n```" if has_reference else "\n## Reference Value\nN/A"
+        reference_section_text = f"\n## Reference Value\n\n{preprocessed_value}\n" if has_reference else "\n## Reference Value\nN/A"
         reference_value_instruction_text = ' and Reference Value' if has_reference else ''
         reference_value_criteria_text = '2. Factual correctness compared to the Reference Value (if provided).' if has_reference else ''
         clarity_criteria_number_text = '3' if has_reference else '2'
@@ -466,15 +788,16 @@ CONFIDENCE: 4/5
              logger.error(f"Error formatting judge prompt template: {e}. Using basic prompt.")
              evaluation_prompt = f"Evaluate Model A vs Model B.\nInput: {preprocessed_key}\nRef: {preprocessed_value}\nA: {preprocessed_champion}\nB: {preprocessed_challenger}\nFormat: VERDICT: [MODEL_A_WINS/MODEL_B_WINS/TIE]\nCONFIDENCE: [1-5]/5\nReasoning: ..."
 
-
         # Log the prompt for debugging (truncated)
         logger.info(f"Using Judge evaluation prompt (truncated): {evaluation_prompt[:500]}...")
 
         # Get judge's response using the constructed prompt as the 'key'
+        # Judge does not receive the image.
         judge_test_case = TestCase(
             key=evaluation_prompt,
             value="", # No value needed for judge call itself
-            id=f"judge_{test_case.id or 'unknown'}"
+            image_path_or_url=None, # Judge is text-only
+            id=f"judge-{test_case.id or 'unknown'}"
         )
         judge_response_obj = self.model_runner.generate(judge_test_case)
 
@@ -502,173 +825,78 @@ CONFIDENCE: 4/5
         confidence = 0.0
 
         # Log the first part of the response for debugging
-        logger.info(f"Parsing judge response (first 100 chars): {response_text[:100]}")
+        logger.debug(f"Parsing judge response (first 100 chars): {response_text[:100]}")
 
-        # Extract verdict from anywhere in the text - more flexible approach
-        # First check for explicit verdict statements
-        verdict_patterns = [
-            # Direct verdict statements
-            r"VERDICT:\s*(MODEL_A_WINS|MODEL_B_WINS|TIE)",
-            r"verdict[:\s]*\s*(MODEL_A_WINS|MODEL_B_WINS|TIE)",
-            # Look for "winner" statements in the reasoning
-            r"winner[:\s]*\s*(MODEL_A_WINS|MODEL_B_WINS|TIE)",
-            # Look for bracketed model indicators like [[A]] or [[MODEL_A]]
-            r"\[\[\s*([AB]|MODEL_[AB]|TIE)\s*\]\]",
-            # Look for double-bracketed verdict at start of response (common pattern)
-            r"^\s*\[\[\s*([AB]|MODEL_[AB]|TIE)\s*\]\]"
-        ]
-
-        for pattern in verdict_patterns:
-            match = re.search(pattern, response_text, re.IGNORECASE)
-            if match:
-                # Extract the verdict
-                verdict_text = match.group(1).upper()
-                logger.info(f"Found verdict pattern match: {verdict_text}")
-                if verdict_text == "A" or verdict_text == "MODEL_A":
-                    verdict = "MODEL_A_WINS"
-                    break
-                elif verdict_text == "B" or verdict_text == "MODEL_B":
-                    verdict = "MODEL_B_WINS"
-                    break
-                elif verdict_text == "TIE":
-                    verdict = "TIE"
-                    break
-                else:
-                    # Direct match for full verdict strings
-                    verdict = verdict_text
-                    break
-
-        # If no explicit verdict found, look for descriptive statements
-        if verdict == "UNDETERMINED":
-            # Check for statements about Model A being better
-            if re.search(r"(Model A|Champion).*?(better|superior|wins|outperforms|delivers a superior response)", response_text, re.IGNORECASE) and not re.search(r"(Model B|Challenger).*?(better|superior|wins|outperforms)", response_text, re.IGNORECASE):
-                verdict = "MODEL_A_WINS"
-                logger.info("Detected Model A wins from descriptive text")
-            # Check for statements about Model B being better
-            elif re.search(r"(Model B|Challenger).*?(better|superior|wins|outperforms|delivers a superior response)", response_text, re.IGNORECASE) and not re.search(r"(Model A|Champion).*?(better|superior|wins|outperforms)", response_text, re.IGNORECASE):
-                verdict = "MODEL_B_WINS"
-                logger.info("Detected Model B wins from descriptive text")
-            # Check for tie statements
-            elif re.search(r"(both models are comparable|neither model is clearly better|tie)", response_text, re.IGNORECASE):
-                verdict = "TIE"
-                logger.info("Detected TIE from descriptive text")
+        # 1. Extract VERDICT (Case-insensitive search for the explicit line)
+        verdict_match = re.search(r"^\s*VERDICT:\s*(MODEL_A_WINS|MODEL_B_WINS|TIE)\s*$", response_text, re.IGNORECASE | re.MULTILINE)
+        if verdict_match:
+            verdict = verdict_match.group(1).upper()
+            logger.info(f"Parsed VERDICT line: {verdict}")
+        else:
+            # Fallback: Look for bracketed verdicts (common LLM-as-judge pattern)
+            bracket_match = re.search(r"\[\[\s*(MODEL_A_WINS|MODEL_B_WINS|TIE)\s*\]\]", response_text, re.IGNORECASE)
+            if bracket_match:
+                verdict = bracket_match.group(1).upper()
+                logger.info(f"Parsed bracketed verdict: {verdict}")
             else:
-                # Look for conclusion statements
-                conclusion_match = re.search(r"(conclusion|in summary|overall).*?(model [ab]|champion|challenger)", response_text, re.IGNORECASE)
-                if conclusion_match:
-                    conclusion = conclusion_match.group(0).lower()
-                    if ("model a" in conclusion or "champion" in conclusion) and not ("model b" in conclusion or "challenger" in conclusion):
-                        verdict = "MODEL_A_WINS"
-                        logger.info("Detected Model A wins from conclusion")
-                    elif ("model b" in conclusion or "challenger" in conclusion) and not ("model a" in conclusion or "champion" in conclusion):
-                        verdict = "MODEL_B_WINS"
-                        logger.info("Detected Model B wins from conclusion")
+                # Fallback: Look for simpler A/B/TIE in brackets
+                simple_bracket_match = re.search(r"\[\[\s*([AB]|TIE)\s*\]\]", response_text, re.IGNORECASE)
+                if simple_bracket_match:
+                     verdict_text = simple_bracket_match.group(1).upper()
+                     if verdict_text == "A": verdict = "MODEL_A_WINS"
+                     elif verdict_text == "B": verdict = "MODEL_B_WINS"
+                     else: verdict = "TIE"
+                     logger.info(f"Parsed simple bracketed verdict: {verdict}")
 
-                # Check for "superior response" pattern
-                if verdict == "UNDETERMINED":
-                    if "Model A" in response_text and "superior response" in response_text:
-                        verdict = "MODEL_A_WINS"
-                        logger.info("Detected Model A wins from 'superior response' pattern")
-                    elif "Model B" in response_text and "superior response" in response_text:
-                        verdict = "MODEL_B_WINS"
-                        logger.info("Detected Model B wins from 'superior response' pattern")
 
-                # If still undetermined, log the issue
-                if verdict == "UNDETERMINED":
-                    logger.warning(f"Could not parse VERDICT from judge response: {response_text[:200]}...")
-
-        # Try to extract CONFIDENCE from anywhere in the text
-        confidence_patterns = [
-            r"CONFIDENCE:\s*(\d+)\s*/\s*5",
-            r"confidence[:\s]*\s*(\d+)\s*/\s*5",
-            r"confidence[:\s]*\s*(\d+)\.(\d+)",  # For decimal confidence like 4.5/5
-            r"confidence[:\s]*\s*(\d+)"  # For just a number
-        ]
-
-        for pattern in confidence_patterns:
-            confidence_match = re.search(pattern, response_text, re.IGNORECASE)
-            if confidence_match:
-                try:
-                    if '.' in confidence_match.group(0):
-                        # Handle decimal confidence
-                        confidence_parts = re.findall(r'\d+\.\d+', confidence_match.group(0))
-                        if confidence_parts:
-                            confidence_score = float(confidence_parts[0])
-                            # Normalize to 0-1 range assuming it's out of 5
-                            confidence = max(0.2, min(1.0, confidence_score / 5.0))
-                            logger.info(f"Parsed decimal confidence: {confidence_score} -> {confidence}")
-                    else:
-                        # Handle integer confidence
-                        confidence_score = int(confidence_match.group(1))
-                        # Clamp confidence between 1 and 5, then normalize
-                        confidence = max(0.2, min(1.0, confidence_score / 5.0))
-                        logger.info(f"Parsed integer confidence: {confidence_score} -> {confidence}")
-                    break
-                except (ValueError, IndexError):
-                    logger.warning(f"Could not parse CONFIDENCE value: {confidence_match.group(0)}")
-
-        # Look for numeric scores like "9.5/10" or "4.0/10"
-        if confidence == 0.0:
-            score_match = re.search(r"(\d+\.?\d*)\s*/\s*10", response_text)
+        # 2. Extract CONFIDENCE (Case-insensitive search for the explicit line)
+        confidence_match = re.search(r"^\s*CONFIDENCE:\s*(\d(?:\.\d)?)\s*/\s*5\s*$", response_text, re.IGNORECASE | re.MULTILINE)
+        if confidence_match:
+            try:
+                confidence_score = float(confidence_match.group(1))
+                # Clamp confidence between 1 and 5, then normalize to 0.2-1.0 range
+                confidence = max(0.2, min(1.0, confidence_score / 5.0))
+                logger.info(f"Parsed CONFIDENCE line: {confidence_score}/5 -> {confidence}")
+            except ValueError:
+                logger.warning(f"Could not parse CONFIDENCE value: {confidence_match.group(1)}")
+        else:
+            # Fallback: Look for rating/score patterns if confidence line missing
+            score_match = re.search(r"(?:rating|score)[:\s]*(\d(?:\.\d)?)\s*/\s*(\d+)", response_text, re.IGNORECASE)
             if score_match:
                 try:
                     score = float(score_match.group(1))
-                    # Convert from 10-point scale to 0-1 range
-                    confidence = max(0.2, min(1.0, score / 10.0))
-                    logger.info(f"Parsed 10-scale confidence: {score} -> {confidence}")
-                except (ValueError, IndexError):
-                    pass
+                    scale = float(score_match.group(2))
+                    if scale > 0:
+                         # Normalize to 0-1 range, clamping between 0.2 and 1.0
+                         confidence = max(0.2, min(1.0, score / scale))
+                         logger.info(f"Parsed score/rating: {score}/{scale} -> {confidence}")
+                except ValueError:
+                     pass # Ignore if parsing fails
 
-        # Look for final scores like "9.5" and "4.0" in the conclusion
-        if confidence == 0.0:
-            # Look for "Final Scores" section with numeric values
-            score_section_match = re.search(r"Final Scores.*?(\d+\.?\d*)", response_text, re.IGNORECASE | re.DOTALL)
-            if score_section_match:
-                try:
-                    score = float(score_section_match.group(1))
-                    # Normalize to 0-1 range assuming it's out of 10
-                    confidence = max(0.2, min(1.0, score / 10.0))
-                    logger.info(f"Parsed score from 'Final Scores' section: {score} -> {confidence}")
-                except (ValueError, IndexError):
-                    pass
+        # 3. Final checks and fallbacks if parsing failed
+        if verdict == "UNDETERMINED":
+            logger.warning(f"Could not reliably parse VERDICT from judge response: {response_text[:200]}...")
+            # Simple keyword check as a last resort (less reliable)
+            if "model a wins" in response_text.lower() and "model b wins" not in response_text.lower():
+                verdict = "MODEL_A_WINS"
+            elif "model b wins" in response_text.lower() and "model a wins" not in response_text.lower():
+                 verdict = "MODEL_B_WINS"
+            elif "tie" in response_text.lower() or "comparable" in response_text.lower():
+                 verdict = "TIE"
 
-        # If still no confidence, estimate based on reasoning length and language
-        if confidence == 0.0:
-            # Check for strong confidence language
-            if re.search(r"(clearly|significantly|substantially|definitely|without doubt|strong)", response_text, re.IGNORECASE):
-                confidence = 0.8
-                logger.info("Using strong confidence language estimate: 0.8")
-            # Check for moderate confidence language
-            elif re.search(r"(somewhat|moderately|reasonably|relatively)", response_text, re.IGNORECASE):
-                confidence = 0.6
-                logger.info("Using moderate confidence language estimate: 0.6")
-            # Default based on reasoning length
-            else:
-                reasoning_length = len(response_text)
-                if reasoning_length > 1000:
-                    confidence = 0.7  # High confidence for detailed reasoning
-                    logger.info("Using reasoning length estimate (>1000 chars): 0.7")
-                elif reasoning_length > 500:
-                    confidence = 0.5  # Medium confidence
-                    logger.info("Using reasoning length estimate (>500 chars): 0.5")
-                else:
-                    confidence = 0.3  # Lower confidence for brief reasoning
-                    logger.info("Using reasoning length estimate (<500 chars): 0.3")
-
-        # If we have a verdict but no confidence, set a default confidence
+        # If we have a verdict but no confidence, assign a default moderate confidence
         if verdict != "UNDETERMINED" and confidence == 0.0:
-            confidence = 0.6  # Default confidence when we have a verdict but couldn't parse confidence
-            logger.info(f"Setting default confidence for verdict {verdict}: 0.6")
+            confidence = 0.6 # Default confidence when parsing fails but verdict is found
+            logger.info(f"Could not parse CONFIDENCE, assigning default {confidence} for verdict {verdict}")
 
-        # Log the final verdict and confidence
-        logger.info(f"Final verdict: {verdict}, confidence: {confidence}")
+        # Log the final parsed values
+        logger.info(f"Final parsed judge result - Winner: {verdict}, Confidence: {confidence:.2f}")
 
         return {
             "winner": verdict,
             "confidence": confidence,
             # Reasoning is the full response text, handled in evaluate method
         }
-
 
 class ResultAggregator:
     """Collects evaluation results and calculates summary statistics."""
@@ -682,6 +910,7 @@ class ResultAggregator:
 
         # Track which test cases had undetermined verdicts for logging
         undetermined_cases = []
+        judge_error_cases = []
 
         for result in evaluation_results:
             verdict = result.winner # Use the pre-parsed winner
@@ -690,21 +919,26 @@ class ResultAggregator:
                 if verdict != "UNDETERMINED" and verdict != "JUDGE_ERROR":
                     confidence_sum += result.confidence
                     valid_verdicts += 1
+                elif verdict == "UNDETERMINED":
+                     undetermined_cases.append(result.test_id)
+                elif verdict == "JUDGE_ERROR":
+                     judge_error_cases.append(result.test_id)
             else:
-                # Should not happen if parsing is correct, but handle defensively
+                # Should not happen if parsing is robust, but handle defensively
+                logger.warning(f"Unexpected verdict '{verdict}' encountered for test_id {result.test_id}. Counting as UNDETERMINED.")
                 verdict_counts["UNDETERMINED"] += 1
-
-            # Log undetermined cases for debugging
-            if verdict == "UNDETERMINED":
                 undetermined_cases.append(result.test_id)
 
-        # Log summary of undetermined cases
+
+        # Log summary of problematic cases
         if undetermined_cases:
             logger.warning(f"Found {len(undetermined_cases)} undetermined verdicts: {undetermined_cases[:5]}" +
                           (f"... and {len(undetermined_cases)-5} more" if len(undetermined_cases) > 5 else ""))
+        if judge_error_cases:
+             logger.warning(f"Found {len(judge_error_cases)} judge errors: {judge_error_cases[:5]}" +
+                          (f"... and {len(judge_error_cases)-5} more" if len(judge_error_cases) > 5 else ""))
 
-
-        # Calculate percentages based on determined verdicts only
+        # Calculate percentages based on determined verdicts only (excluding UNDETERMINED and JUDGE_ERROR)
         determined_verdicts = total_evaluations - verdict_counts["UNDETERMINED"] - verdict_counts["JUDGE_ERROR"]
         verdict_percentages = {}
         if determined_verdicts > 0:
@@ -722,14 +956,32 @@ class ResultAggregator:
 
         average_confidence = (confidence_sum / valid_verdicts) if valid_verdicts > 0 else 0
 
+        # Convert EvaluationResult objects to dictionaries for JSON serialization
+        raw_eval_dicts = []
+        for res in evaluation_results:
+             try:
+                 # Assuming EvaluationResult is a dataclass or has a simple structure
+                 raw_eval_dicts.append({
+                     "test_id": res.test_id,
+                     "winner": res.winner,
+                     "confidence": res.confidence,
+                     "champion_output": res.champion_output,
+                     "challenger_output": res.challenger_output,
+                     "reasoning": res.reasoning,
+                 })
+             except AttributeError as e:
+                 logger.error(f"Error converting EvaluationResult to dict for test_id {res.test_id}: {e}")
+                 # Add a placeholder or skip
+                 raw_eval_dicts.append({"test_id": getattr(res, 'test_id', 'unknown'), "error": "Failed to serialize result"})
+
+
         return {
             "total_evaluations": total_evaluations,
             "verdict_counts": verdict_counts,
             "verdict_percentages": verdict_percentages, # Based on determined verdicts
-            "average_confidence": round(average_confidence, 3), # Avg confidence for non-undetermined
-            "raw_evaluations": [res.__dict__ for res in evaluation_results] # Keep raw for output
+            "average_confidence": round(average_confidence, 3), # Avg confidence for non-undetermined/error
+            "raw_evaluations": raw_eval_dicts # Keep raw for output (as dicts)
         }
-
 
 class ModelTester:
     """Main class that orchestrates the A/B testing process."""
@@ -763,23 +1015,20 @@ class ModelTester:
     ) -> Dict[str, Any]:
         """
         Run the complete test process: generate responses, evaluate, aggregate.
-        
-        The method includes a batch retry mechanism that can automatically retry batches
-        when certain trigger strings are detected in model responses or judge reasoning.
-        This is useful for handling transient errors, rate limiting, or other issues that
-        might affect the quality of responses.
+
+        Includes batch retry mechanism for transient errors or problematic responses.
         Args:
-            test_cases: List of test cases to process
-            batch_size: Number of test cases to process in each batch
-            progress: Optional progress callback function
-            batch_retry_attempts: Maximum number of retry attempts for a batch (0 means no retries)
-            batch_backoff_factor: Factor for exponential backoff between retries
-            batch_max_wait: Maximum wait time in seconds between retries
-            batch_retry_trigger_strings: List of strings that trigger a batch retry when found in model responses
+            test_cases: List of test cases (potentially including image paths/URLs)
+            batch_size: Number of test cases per batch
+            progress: Gradio progress callback
+            batch_retry_attempts: Max retries per batch
+            batch_backoff_factor: Exponential backoff factor
+            batch_max_wait: Max wait time between retries
+            batch_retry_trigger_strings: List of strings triggering retry if found in outputs/reasoning
         """
         all_evaluation_results: List[EvaluationResult] = []
-        champion_metrics = {"total_latency": 0.0, "total_output_chars": 0, "success_count": 0, "error_count": 0}
-        challenger_metrics = {"total_latency": 0.0, "total_output_chars": 0, "success_count": 0, "error_count": 0}
+        champion_metrics = {"total_latency": 0.0, "total_output_chars": 0, "success_count": 0, "error_count": 0, "image_load_errors": 0}
+        challenger_metrics = {"total_latency": 0.0, "total_output_chars": 0, "success_count": 0, "error_count": 0, "image_load_errors": 0}
         judge_metrics = {"total_latency": 0.0, "total_output_chars": 0, "success_count": 0, "error_count": 0}
 
         num_cases = len(test_cases)
@@ -788,25 +1037,26 @@ class ModelTester:
              return {"evaluations": [], "summary": {"error": "No test cases loaded."}}
 
         total_batches = (num_cases + batch_size - 1) // batch_size
-        current_case_index = 0
+        processed_case_count = 0 # Track actual processed cases for progress
         global STOP_REQUESTED # Access the global flag
 
         # Process in batches
         for i in range(0, num_cases, batch_size):
             if STOP_REQUESTED:
-                logger.warning(f"Stop requested. Finishing early after {i} cases.")
+                logger.warning(f"Stop requested. Finishing early after processing {processed_case_count} cases.")
                 if progress:
-                    progress(i / num_cases, f"Stopping early after {i} cases...")
+                    progress(processed_case_count / num_cases, f"Stopping early after {processed_case_count} cases...")
                 break # Exit the batch loop
 
-            batch = test_cases[i:min(i + batch_size, num_cases)]
+            current_batch = test_cases[i:min(i + batch_size, num_cases)]
             batch_num = i // batch_size + 1
-            logger.info(f"Processing batch {batch_num}/{total_batches} (Cases {i+1}-{min(i+batch_size, num_cases)})")
+            logger.info(f"--- Processing Batch {batch_num}/{total_batches} (Cases {i+1}-{min(i+batch_size, num_cases)}) ---")
 
             # Initialize retry counter and success flag for this batch
             retry_count = 0
             batch_success = False
-            
+            batch_eval_results: List[EvaluationResult] = [] # Store results for *this successful batch attempt*
+
             # Process this batch with retries if configured
             while not batch_success and retry_count <= batch_retry_attempts:
                 if retry_count > 0:
@@ -814,86 +1064,106 @@ class ModelTester:
                     delay = min(batch_backoff_factor ** (retry_count - 1), batch_max_wait)
                     logger.info(f"Retrying batch {batch_num} (attempt {retry_count}/{batch_retry_attempts}) after {delay:.2f}s delay")
                     if progress is not None:
-                        progress(i / num_cases, f"Retrying Batch {batch_num} (attempt {retry_count}/{batch_retry_attempts})")
+                        # Update progress based on already processed cases, not 'i'
+                        progress(processed_case_count / num_cases, f"Retrying Batch {batch_num} ({retry_count}/{batch_retry_attempts})")
                     time.sleep(delay)
                 else:
                     if progress is not None:
-                        progress(i / num_cases, f"Running Batch {batch_num}/{total_batches}")
+                         progress(processed_case_count / num_cases, f"Running Batch {batch_num}/{total_batches}")
 
-                # Store responses and evaluation results for the batch
-                batch_champ_responses: Dict[str, ModelResponse] = {}
-                batch_chall_responses: Dict[str, ModelResponse] = {}
-                batch_eval_results: List[EvaluationResult] = []
+                # Reset batch-specific stores for this attempt
+                current_attempt_champ_responses: Dict[str, ModelResponse] = {}
+                current_attempt_chall_responses: Dict[str, ModelResponse] = {}
+                current_attempt_eval_results: List[EvaluationResult] = []
+                has_trigger_string_in_attempt = False
 
-                # 1. Get responses from Champion and Challenger models
-                # Store the current case indices for this batch to ensure consistent IDs across retries
-                batch_case_indices = {}
-                for i, test_case in enumerate(batch):
-                    # Only assign a new index if this is the first attempt for this batch
-                    if retry_count == 0:
-                        current_case_index += 1
-                    
-                    # Use existing ID or create a consistent one based on current_case_index
-                    case_id = test_case.id or f"case_{current_case_index - len(batch) + i + 1}"
-                    test_case.id = case_id # Update test case object with ID
-                    batch_case_indices[case_id] = i
+                # 1. Get responses from Champion and Challenger models for the current batch attempt
+                for batch_idx, test_case in enumerate(current_batch):
+                     # Generate a consistent ID if not present, using overall index 'i' + batch_idx
+                     case_id = test_case.id or f"case-{i + batch_idx + 1}"
+                     test_case.id = case_id # Ensure the test case object has the ID
 
-                    # Champion
-                    try:
-                        champ_resp = self.champion_runner.generate(test_case)
-                        batch_champ_responses[case_id] = champ_resp
-                        champion_metrics["total_latency"] += champ_resp.latency
-                        champion_metrics["total_output_chars"] += len(champ_resp.output)
-                        if not champ_resp.output.startswith("Error:"): champion_metrics["success_count"] += 1
-                        else: champion_metrics["error_count"] += 1
-                    except Exception as e:
-                        logger.error(f"Error generating champion response for case {case_id}: {e}")
-                        batch_champ_responses[case_id] = ModelResponse(case_id, self.champion_endpoint.name, f"Error: Generation failed - {e}", 0)
-                        champion_metrics["error_count"] += 1
+                     # --- Champion ---
+                     try:
+                         champ_resp = self.champion_runner.generate(test_case)
+                         current_attempt_champ_responses[case_id] = champ_resp
+                         # Only count metrics if not an image loading error generated by our code
+                         if not champ_resp.output.startswith("Error: Failed to load image"):
+                              champion_metrics["total_latency"] += champ_resp.latency
+                              champion_metrics["total_output_chars"] += len(champ_resp.output)
+                              if not champ_resp.output.startswith("Error:"): champion_metrics["success_count"] += 1
+                              else: champion_metrics["error_count"] += 1
+                         else:
+                              champion_metrics["image_load_errors"] += 1
+                              champion_metrics["error_count"] += 1 # Count as an error
 
-                    # Challenger
-                    try:
-                        chall_resp = self.challenger_runner.generate(test_case)
-                        batch_chall_responses[case_id] = chall_resp
-                        challenger_metrics["total_latency"] += chall_resp.latency
-                        challenger_metrics["total_output_chars"] += len(chall_resp.output)
-                        if not chall_resp.output.startswith("Error:"): challenger_metrics["success_count"] += 1
-                        else: challenger_metrics["error_count"] += 1
-                    except Exception as e:
-                        logger.error(f"Error generating challenger response for case {case_id}: {e}")
-                        batch_chall_responses[case_id] = ModelResponse(case_id, self.challenger_endpoint.name, f"Error: Generation failed - {e}", 0)
-                        challenger_metrics["error_count"] += 1
+                     except Exception as e:
+                         logger.error(f"Critical error generating champion response for case {case_id}: {e}", exc_info=True)
+                         current_attempt_champ_responses[case_id] = ModelResponse(case_id, self.champion_endpoint.name, f"Error: Generation failed critically - {e}", 0)
+                         champion_metrics["error_count"] += 1
 
-                # 2. Evaluate with LM Judge
+                     # --- Challenger ---
+                     try:
+                         chall_resp = self.challenger_runner.generate(test_case)
+                         current_attempt_chall_responses[case_id] = chall_resp
+                         if not chall_resp.output.startswith("Error: Failed to load image"):
+                             challenger_metrics["total_latency"] += chall_resp.latency
+                             challenger_metrics["total_output_chars"] += len(chall_resp.output)
+                             if not chall_resp.output.startswith("Error:"): challenger_metrics["success_count"] += 1
+                             else: challenger_metrics["error_count"] += 1
+                         else:
+                             challenger_metrics["image_load_errors"] += 1
+                             challenger_metrics["error_count"] += 1
+                     except Exception as e:
+                         logger.error(f"Critical error generating challenger response for case {case_id}: {e}", exc_info=True)
+                         current_attempt_chall_responses[case_id] = ModelResponse(case_id, self.challenger_endpoint.name, f"Error: Generation failed critically - {e}", 0)
+                         challenger_metrics["error_count"] += 1
+
+                # 2. Evaluate with LM Judge for the current batch attempt
                 if progress is not None:
-                    progress((i + batch_size * 0.5) / num_cases, f"Evaluating Batch {batch_num}/{total_batches}")
+                    progress((processed_case_count + len(current_batch) * 0.5) / num_cases, f"Evaluating Batch {batch_num}")
 
-                # Flag to track if any response contains a trigger string
-                has_trigger_string = False
-                
-                for test_case in batch:
+                for test_case in current_batch:
                     case_id = test_case.id # Should have been set above
-                    champ_response = batch_champ_responses.get(case_id)
-                    chall_response = batch_chall_responses.get(case_id)
+                    champ_response = current_attempt_champ_responses.get(case_id)
+                    chall_response = current_attempt_chall_responses.get(case_id)
 
-                    # Skip evaluation if either model failed catastrophically
-                    if not champ_response or not chall_response:
-                        logger.warning(f"Skipping evaluation for case {case_id} due to missing model response.")
-                        continue
+                    # Skip evaluation if either model failed critically or had image load error
+                    if not champ_response or not chall_response or \
+                       champ_response.output.startswith("Error:") or \
+                       chall_response.output.startswith("Error:"):
+                        logger.warning(f"Skipping evaluation for case {case_id} due to generation error in one or both models.")
+                        # Create a dummy eval result indicating skip? Or just don't add? Let's not add.
+                        # We need a placeholder if retry depends on judge output, otherwise skip.
+                        # For simplicity now, we'll create an error result if a model failed.
+                        eval_reason = f"Skipped: Champion Error: {champ_response.output[:100]}... Challenger Error: {chall_response.output[:100]}..." if champ_response and chall_response else "Skipped: Model generation failed."
+                        current_attempt_eval_results.append(EvaluationResult(
+                              test_id=case_id,
+                              champion_output=champ_response.output if champ_response else "GENERATION FAILED",
+                              challenger_output=chall_response.output if chall_response else "GENERATION FAILED",
+                              winner="JUDGE_ERROR", # Count as judge error if models failed
+                              confidence=0.0,
+                              reasoning=eval_reason
+                         ))
+                        judge_metrics["error_count"] += 1
+                        continue # Skip to next test case in batch
 
-                    # Check for trigger strings in model responses if retry is configured
+                    # Check for trigger strings in model responses *before* calling judge if retry is enabled
                     if batch_retry_attempts > 0 and batch_retry_trigger_strings:
                         for trigger in batch_retry_trigger_strings:
-                            if (trigger in champ_response.output or
-                                trigger in chall_response.output):
-                                logger.warning(f"Trigger string '{trigger}' found in responses for case {case_id}")
-                                has_trigger_string = True
-                                break
-                    
-                    # If we already found a trigger string and retries are enabled, we can skip further evaluations
-                    if has_trigger_string and retry_count < batch_retry_attempts:
-                        continue
+                            if trigger in champ_response.output or trigger in chall_response.output:
+                                logger.warning(f"Trigger string '{trigger}' found in model responses for case {case_id}. Batch will be retried.")
+                                has_trigger_string_in_attempt = True
+                                break # No need to check other triggers for this case
+                        if has_trigger_string_in_attempt:
+                            # Add a placeholder result indicating retry trigger
+                            current_attempt_eval_results.append(EvaluationResult(
+                                test_id=case_id, champion_output=champ_response.output, challenger_output=chall_response.output,
+                                winner="UNDETERMINED", confidence=0.0, reasoning=f"Retry triggered by model output string."
+                            ))
+                            continue # Skip judge call for this case if retry is triggered by models
 
+                    # If no model trigger, proceed to judge evaluation
                     try:
                         start_time = time.time()
                         evaluation_result = self.judge.evaluate(
@@ -904,101 +1174,107 @@ class ModelTester:
                         judge_latency = time.time() - start_time
                         judge_metrics["total_latency"] += judge_latency
                         judge_metrics["total_output_chars"] += len(evaluation_result.reasoning) # Judge output length
-                        batch_eval_results.append(evaluation_result)
-                        
-                        # Check for trigger strings in judge reasoning
-                        if batch_retry_attempts > 0 and batch_retry_trigger_strings and not has_trigger_string:
+                        current_attempt_eval_results.append(evaluation_result)
+
+                        # Check for trigger strings in judge reasoning if retry is configured
+                        if batch_retry_attempts > 0 and batch_retry_trigger_strings and not has_trigger_string_in_attempt:
                             for trigger in batch_retry_trigger_strings:
                                 if trigger in evaluation_result.reasoning:
-                                    logger.warning(f"Trigger string '{trigger}' found in judge reasoning for case {case_id}")
-                                    has_trigger_string = True
+                                    logger.warning(f"Trigger string '{trigger}' found in judge reasoning for case {case_id}. Batch will be retried.")
+                                    has_trigger_string_in_attempt = True
+                                    # Overwrite the winner to UNDETERMINED if retry triggered by judge
+                                    evaluation_result.winner = "UNDETERMINED"
+                                    evaluation_result.reasoning += "\n[Retry triggered by judge reasoning]"
                                     break
-                        
-                        # Check if judge produced a valid verdict (not undetermined)
-                        if evaluation_result.winner != "UNDETERMINED": judge_metrics["success_count"] += 1
-                        else: judge_metrics["error_count"] += 1
+
+                        # Update judge success/error counts based on final verdict (after potential trigger overwrite)
+                        if evaluation_result.winner != "UNDETERMINED" and evaluation_result.winner != "JUDGE_ERROR": judge_metrics["success_count"] += 1
+                        else: judge_metrics["error_count"] += 1 # Count undetermined/judge_error as errors for judge metrics
 
                     except Exception as e:
-                        logger.error(f"Error during judge evaluation for case {case_id}: {e}")
+                        logger.error(f"Error during judge evaluation for case {case_id}: {e}", exc_info=True)
                         # Create a placeholder eval result indicating judge failure
-                        batch_eval_results.append(EvaluationResult(
+                        current_attempt_eval_results.append(EvaluationResult(
                             test_id=case_id,
                             champion_output=champ_response.output,
                             challenger_output=chall_response.output,
                             winner="JUDGE_ERROR",
                             confidence=0.0,
-                            reasoning=f"Error: Judge evaluation failed - {e}"
+                            reasoning=f"Error: Judge evaluation failed critically - {e}"
                         ))
                         judge_metrics["error_count"] += 1
+                        # If judge fails critically, maybe trigger retry? For now, just mark as error.
+                        # has_trigger_string_in_attempt = True # Option: Trigger retry on judge exception
 
-                # Determine if we need to retry this batch
-                if has_trigger_string and retry_count < batch_retry_attempts:
-                    logger.warning(f"Batch {batch_num} contains trigger strings. Retrying ({retry_count+1}/{batch_retry_attempts})...")
-                    # Log which trigger strings were found
-                    if batch_retry_trigger_strings:
-                        found_triggers = set()
-                        for case_id, champ_response in batch_champ_responses.items():
-                            for trigger in batch_retry_trigger_strings:
-                                if trigger in champ_response.output:
-                                    found_triggers.add(f"'{trigger}' in champion response for {case_id}")
-                        for case_id, chall_response in batch_chall_responses.items():
-                            for trigger in batch_retry_trigger_strings:
-                                if trigger in chall_response.output:
-                                    found_triggers.add(f"'{trigger}' in challenger response for {case_id}")
-                        for result in batch_eval_results:
-                            for trigger in batch_retry_trigger_strings:
-                                if trigger in result.reasoning:
-                                    found_triggers.add(f"'{trigger}' in judge reasoning for {result.test_id}")
-                        
-                        if found_triggers:
-                            logger.info(f"Trigger strings found in batch {batch_num}: {', '.join(found_triggers)}")
-                    
+                # --- Batch Retry Logic ---
+                if has_trigger_string_in_attempt and retry_count < batch_retry_attempts:
+                    logger.warning(f"Batch {batch_num} attempt {retry_count+1} failed due to trigger strings. Retrying...")
                     retry_count += 1
-                    # Don't save results, we'll retry the batch
-                    continue
+                    # Clear temporary results for this failed attempt, metrics were already counted above
+                    current_attempt_eval_results = []
+                    continue # Go to the next iteration of the while loop (retry)
                 else:
-                    # Either no trigger strings found or we've exhausted retries
+                    # Conditions to accept the batch results:
+                    # 1. No trigger strings were found in this attempt.
+                    # 2. Trigger strings were found, but we've exhausted retry attempts.
                     batch_success = True
-                    all_evaluation_results.extend(batch_eval_results)
-                    
-                    # Log if we're accepting results after exhausting retries
-                    if has_trigger_string and retry_count >= batch_retry_attempts:
-                        logger.warning(f"Accepting batch {batch_num} results despite trigger strings after exhausting {batch_retry_attempts} retry attempts")
-                    
-                    # Log batch summary
-                    batch_summary = self.aggregator.aggregate(batch_eval_results)
-                    if retry_count > 0:
-                        logger.info(f"Batch {batch_num} completed after {retry_count} retries. Summary: {batch_summary['verdict_counts']}")
-                    else:
-                        logger.info(f"Batch {batch_num} summary: {batch_summary['verdict_counts']}")
+                    batch_eval_results = current_attempt_eval_results # Store the results of the successful (or final) attempt
 
-        # 3. Aggregate final results
+                    if has_trigger_string_in_attempt and retry_count >= batch_retry_attempts:
+                        logger.warning(f"Accepting batch {batch_num} results despite trigger strings after exhausting {batch_retry_attempts} retry attempts. Some results may be marked UNDETERMINED.")
+
+                    # Log summary for the completed batch attempt
+                    batch_summary = self.aggregator.aggregate(batch_eval_results) # Aggregate results of this specific batch
+                    log_prefix = f"Batch {batch_num} completed"
+                    if retry_count > 0: log_prefix += f" after {retry_count} retries"
+                    logger.info(f"{log_prefix}. Verdict Counts: {batch_summary['verdict_counts']}")
+
+
+            # --- End of Batch Processing ---
+            # Add the results of the successful batch attempt to the overall list
+            all_evaluation_results.extend(batch_eval_results)
+            processed_case_count += len(current_batch) # Update processed count *after* successful batch completion
+
+
+        # 3. Aggregate final results across all successful batches
         aggregated_summary = self.aggregator.aggregate(all_evaluation_results)
 
-        # 4. Calculate final metrics
-        def calculate_avg_metrics(metrics, count):
-            if count == 0: return {"avg_latency": 0, "avg_chars": 0, "success_rate": 0, "errors": metrics.get("error_count", 0)}
-            total_runs = metrics["success_count"] + metrics["error_count"]
-            return {
-                "avg_latency": round(metrics["total_latency"] / total_runs, 2) if total_runs > 0 else 0,
-                "avg_chars": int(metrics["total_output_chars"] / metrics["success_count"]) if metrics["success_count"] > 0 else 0,
-                "success_rate": round((metrics["success_count"] / total_runs) * 100, 1) if total_runs > 0 else 0,
-                "errors": metrics["error_count"]
-            }
+        # 4. Calculate final metrics (using totals accumulated across all attempts)
+        def calculate_avg_metrics(metrics, total_cases):
+             # Base counts on total cases attempted, errors include generation/image load issues
+             total_attempts = metrics["success_count"] + metrics["error_count"]
+             # Avg latency based on total attempts where latency was recorded (excludes critical failures before generation)
+             valid_latency_runs = metrics["success_count"] + (metrics["error_count"] - metrics.get("image_load_errors", 0)) # Approx.
+             avg_latency = round(metrics["total_latency"] / valid_latency_runs, 2) if valid_latency_runs > 0 else 0
+             # Avg chars based only on successful generations
+             avg_chars = int(metrics["total_output_chars"] / metrics["success_count"]) if metrics["success_count"] > 0 else 0
+             # Success rate based on total test cases attempted
+             success_rate = round((metrics["success_count"] / total_cases) * 100, 1) if total_cases > 0 else 0
 
-        champion_avg_metrics = calculate_avg_metrics(champion_metrics, num_cases)
-        challenger_avg_metrics = calculate_avg_metrics(challenger_metrics, num_cases)
-        judge_avg_metrics = calculate_avg_metrics(judge_metrics, num_cases) # Judge runs once per case
+             return {
+                 "avg_latency_s": avg_latency,
+                 "avg_output_chars": avg_chars,
+                 "success_rate_pct": success_rate,
+                 "errors": metrics["error_count"],
+                 "image_load_errors": metrics.get("image_load_errors", 0)
+             }
+
+        # Use processed_case_count for denominators as it reflects actual attempts before potential early stopping
+        champion_avg_metrics = calculate_avg_metrics(champion_metrics, processed_case_count)
+        challenger_avg_metrics = calculate_avg_metrics(challenger_metrics, processed_case_count)
+        # Judge metrics are based on cases where evaluation was attempted
+        judge_attempts = judge_metrics["success_count"] + judge_metrics["error_count"]
+        judge_avg_metrics = calculate_avg_metrics(judge_metrics, judge_attempts)
 
 
         # 5. Determine overall decision based on aggregated results
         decision = "MAINTAIN_CHAMPION" # Default
         reason = "Insufficient data or challenger did not significantly outperform."
         win_margin_threshold = 5 # Challenger needs to win by at least 5% points
-        min_determined_verdicts = 3 # Minimum number of determined verdicts needed for a reliable decision
+        min_determined_verdicts = max(3, int(0.1 * processed_case_count)) # Need at least 3 or 10% determined verdicts
 
         percentages = aggregated_summary["verdict_percentages"]
-        determined_verdicts = num_cases - aggregated_summary["verdict_counts"].get("UNDETERMINED", 0) - aggregated_summary["verdict_counts"].get("JUDGE_ERROR", 0)
+        determined_verdicts = processed_case_count - aggregated_summary["verdict_counts"].get("UNDETERMINED", 0) - aggregated_summary["verdict_counts"].get("JUDGE_ERROR", 0)
 
         if determined_verdicts >= min_determined_verdicts:
             champ_wins_pct = percentages.get("MODEL_A_WINS", 0)
@@ -1011,33 +1287,36 @@ class ModelTester:
 
             if chall_wins_pct > champ_wins_pct + win_margin_threshold:
                  decision = "REPLACE_WITH_CHALLENGER"
-                 reason = f"Challenger won {chall_wins_pct}% vs Champion's {champ_wins_pct}%{confidence_factor} (>{win_margin_threshold}% margin)."
+                 reason = f"Challenger won {chall_wins_pct:.1f}% vs Champion's {champ_wins_pct:.1f}%{confidence_factor} (>{win_margin_threshold}% margin based on {determined_verdicts} determined verdicts)."
             elif champ_wins_pct > chall_wins_pct + win_margin_threshold:
                  decision = "MAINTAIN_CHAMPION"
-                 reason = f"Champion won {champ_wins_pct}% vs Challenger's {chall_wins_pct}%{confidence_factor}."
+                 reason = f"Champion won {champ_wins_pct:.1f}% vs Challenger's {chall_wins_pct:.1f}%{confidence_factor} (based on {determined_verdicts} determined verdicts)."
             else:
                  # Closer results, consider ties or maintain status quo
                  decision = "MAINTAIN_CHAMPION"
-                 reason = f"Results close ({champ_wins_pct}% vs {chall_wins_pct}%, {ties_pct}% ties){confidence_factor}. Challenger did not show clear superiority."
+                 reason = f"Results close ({champ_wins_pct:.1f}% vs {chall_wins_pct:.1f}%, {ties_pct:.1f}% ties){confidence_factor}. Challenger did not show clear superiority (based on {determined_verdicts} determined verdicts)."
         else:
             # Not enough determined verdicts for a reliable decision
             decision = "MAINTAIN_CHAMPION"
-            reason = f"Insufficient determined verdicts ({determined_verdicts}/{num_cases}) to make a reliable decision. Defaulting to maintaining champion."
-
+            reason = f"Insufficient determined verdicts ({determined_verdicts}/{processed_case_count}, need >= {min_determined_verdicts}) to make a reliable decision. Defaulting to maintaining champion."
 
         # Log final summary
-        logger.info(f"Final Aggregated Results: {aggregated_summary['verdict_counts']}")
-        logger.info(f"Final Percentages: {aggregated_summary['verdict_percentages']}")
+        logger.info(f"--- Final Aggregated Results ({processed_case_count} cases processed) ---")
+        logger.info(f"Verdict Counts: {aggregated_summary['verdict_counts']}")
+        logger.info(f"Verdict Percentages (Determined Only): {aggregated_summary['verdict_percentages']}")
+        logger.info(f"Average Confidence (Determined Only): {aggregated_summary['average_confidence']:.3f}")
+        logger.info(f"Champion Metrics: {champion_avg_metrics}")
+        logger.info(f"Challenger Metrics: {challenger_avg_metrics}")
+        logger.info(f"Judge Metrics: {judge_avg_metrics}")
         logger.info(f"Decision: {decision} - {reason}")
 
         if progress is not None:
-            progress(1.0, "Testing completed")
+            final_status = "Testing completed" if not STOP_REQUESTED else "Testing stopped early"
+            progress(1.0, final_status)
 
-        return {
-            # Keep raw evaluations separate from summary
-            "evaluations": aggregated_summary["raw_evaluations"],
-            "summary": {
-                "total_test_cases": num_cases,
+        final_summary = {
+                "total_test_cases_processed": processed_case_count,
+                "total_test_cases_loaded": num_cases,
                 "verdicts": aggregated_summary["verdict_counts"],
                 "verdict_percentages": aggregated_summary["verdict_percentages"],
                 "average_confidence": aggregated_summary["average_confidence"],
@@ -1050,76 +1329,107 @@ class ModelTester:
                 "challenger_name": self.challenger_endpoint.name,
                 "judge_name": self.judge_endpoint.name,
             }
-        }
 
+        return {
+            # Keep raw evaluations separate from summary
+            "evaluations": aggregated_summary["raw_evaluations"],
+            "summary": final_summary
+        }
 
 # --- Gradio UI Components & Logic ---
 
-def parse_test_data(file_obj, text_data, key_field_name: str = "key", value_field_name: str = "value") -> List[TestCase]:
+def parse_test_data(
+    file_obj,
+    text_data,
+    key_field_name: str = "key",
+    value_field_name: str = "value",
+    image_field_name: str = "image_url" # Added image field name parameter
+) -> List[TestCase]:
     """
     Parses test data from Gradio file upload or text input.
-    Uses specified field names for key and value.
+    Uses specified field names for key, value, and image path/URL.
     """
     test_cases = []
     raw_data = None
 
     if file_obj is not None:
-        logger.info(f"Loading test data from uploaded file: {file_obj.name}")
+        # Use the temporary file path provided by Gradio
         file_path = file_obj.name
+        logger.info(f"Loading test data from uploaded file: {file_path}")
         try:
-            if file_path.lower().endswith(".json"):
+            # Determine file type from extension, not relying on original name if temp name is different
+            _, file_ext = os.path.splitext(file_path)
+            file_ext = file_ext.lower()
+
+            if file_ext == ".json":
                 with open(file_path, 'r', encoding='utf-8') as f:
                     raw_data = json.load(f)
-            elif file_path.lower().endswith(".csv"):
+            elif file_ext == ".csv":
                 # Read CSV into pandas DataFrame first for easier handling
                 try:
                      # Try detecting delimiter, handle potential bad lines
-                     df = pd.read_csv(file_path, sep=None, engine='python', on_bad_lines='warn')
+                     # Use sensible defaults, allow overriding later if needed
+                     df = pd.read_csv(
+                          file_path,
+                          sep=None, # Auto-detect
+                          engine='python',
+                          on_bad_lines='warn',
+                          quoting=csv.QUOTE_MINIMAL, # Default quoting
+                          escapechar='\\' # Common escape character
+                          )
                      logger.info(f"CSV loaded successfully. Columns: {df.columns.tolist()}")
+                     # Convert NaN/NaT to None for cleaner processing -> convert to empty string later
+                     df = df.fillna('')
                      # Convert DataFrame rows to list of dictionaries
                      raw_data = df.to_dict(orient='records')
                 except Exception as e:
                      logger.error(f"Error reading CSV file '{file_path}': {e}")
                      raise ValueError(f"Error reading CSV: {e}")
-            elif file_path.lower().endswith((".jsonl", ".ndjson")):
+            elif file_ext in (".jsonl", ".ndjson"):
                 # Handle JSONL (newline-delimited JSON)
                 raw_data = []
                 with open(file_path, 'r', encoding='utf-8') as f:
-                    for line in f:
+                    for line_num, line in enumerate(f):
+                        line = line.strip()
+                        if not line: continue # Skip empty lines
                         try:
                             item = json.loads(line)
                             raw_data.append(item)
                         except json.JSONDecodeError:
-                            logger.warning(f"Skipping invalid JSON line: {line.strip()}")
+                            logger.warning(f"Skipping invalid JSON line #{line_num + 1} in file '{file_path}': {line[:100]}...")
                 if not raw_data:
                     raise ValueError("No valid JSON objects found in JSONL file.")
             else:
-                # Check against allowed extensions explicitly
                 allowed_extensions = ['.csv', '.json', '.jsonl', '.ndjson']
-                file_ext = os.path.splitext(file_path)[1].lower()
-                if file_ext not in allowed_extensions:
-                    raise ValueError(f"Invalid file type. Please upload a file that is one of these formats: {allowed_extensions}")
-                else:
-                    # This case should ideally not be reached if all supported types are handled above
-                    raise ValueError(f"Unhandled supported file type: {file_ext}. Please report this bug.")
+                raise ValueError(f"Invalid file type ({file_ext}). Please upload a file that is one of these formats: {allowed_extensions}")
 
         except Exception as e:
-            logger.error(f"Error processing uploaded file {file_path}: {e}")
+            logger.error(f"Error processing uploaded file {file_path}: {e}", exc_info=True)
             raise ValueError(f"Failed to process file: {e}")
 
     elif text_data and text_data.strip():
         logger.info("Loading test data from text input.")
         try:
+            # Try parsing as JSON list first
             raw_data = json.loads(text_data)
-        except json.JSONDecodeError as e:
-            logger.error(f"Invalid JSON in text input: {e}")
-            raise ValueError(f"Invalid JSON format in text input: {e}")
+            if not isinstance(raw_data, list):
+                raise ValueError("Pasted text is valid JSON, but not a list of objects.")
+        except json.JSONDecodeError as json_err:
+            # If JSON fails, try treating it as line-delimited JSON (JSONL)
+            logger.warning(f"Could not parse text as JSON list ({json_err}), trying as JSONL...")
+            try:
+                 raw_data = [json.loads(line) for line in text_data.strip().splitlines() if line.strip()]
+                 if not raw_data:
+                      raise ValueError("No valid JSON objects found in text input lines.")
+            except json.JSONDecodeError as line_err:
+                logger.error(f"Invalid JSON format in text input (checked as list and line-by-line): {line_err}")
+                raise ValueError(f"Invalid JSON format in text input. Ensure it's a list of objects `[ {{\"key\": ...}}, ... ]` or one JSON object per line.")
         except Exception as e:
-            logger.error(f"Error processing text input data: {e}")
+            logger.error(f"Error processing text input data: {e}", exc_info=True)
             raise ValueError(f"Failed to process text data: {e}")
 
     else:
-        raise ValueError("No test data provided. Please upload a file or paste JSON.")
+        raise ValueError("No test data provided. Please upload a file or paste JSON/JSONL.")
 
     # Convert raw_data (list of dicts) to TestCase objects
     if isinstance(raw_data, list):
@@ -1128,14 +1438,21 @@ def parse_test_data(file_obj, text_data, key_field_name: str = "key", value_fiel
                 try:
                     # Ensure the specified key field exists, value field is optional
                     # 'id' is optional (defaults to None, ModelTester assigns later if needed)
+                    # 'image' field is optional
                     key = item.get(key_field_name)
                     if key is None:
                          logger.warning(f"Skipping item {i+1} due to missing '{key_field_name}' field. Data: {item}")
                          continue
+
+                    # Get image path/url if field exists and is not empty/None
+                    image_val = item.get(image_field_name) if image_field_name else None
+                    image_path_or_url = str(image_val).strip() if image_val and str(image_val).strip() else None
+
                     test_cases.append(TestCase(
-                        id=str(item.get('id', f"item_{i+1}")), # Ensure ID is string
+                        id=str(item.get('id', f"item-{i+1}")), # Ensure ID is string, use item index
                         key=str(key), # Ensure key is string
-                        value=str(item.get(value_field_name, '')) # Ensure value is string, default empty
+                        value=str(item.get(value_field_name, '')), # Ensure value is string, default empty
+                        image_path_or_url=image_path_or_url,
                     ))
                 except Exception as e:
                     logger.warning(f"Skipping item {i+1} due to error during TestCase creation: {e}. Data: {item}")
@@ -1160,39 +1477,56 @@ def format_summary_output(summary_data: Dict[str, Any]) -> str:
     output += f"Champion: {summary_data.get('champion_name', 'N/A')}\n"
     output += f"Challenger: {summary_data.get('challenger_name', 'N/A')}\n"
     output += f"Judge: {summary_data.get('judge_name', 'N/A')}\n"
-    output += f"Total Test Cases: {summary_data.get('total_test_cases', 'N/A')}\n"
+    output += f"Test Cases Loaded: {summary_data.get('total_test_cases_loaded', 'N/A')}\n"
+    output += f"Test Cases Processed: {summary_data.get('total_test_cases_processed', 'N/A')}\n"
 
-    output += "\nVerdicts:\n"
+    output += "\nVerdicts (Based on Processed Cases):\n"
     for verdict, count in summary_data.get('verdicts', {}).items():
         output += f"  {verdict}: {count}\n"
 
-    output += "\nVerdict Percentages (Determined Only):\n"
+    output += "\nVerdict Percentages (Based on Determined Verdicts):\n"
+    determined = summary_data.get('total_test_cases_processed', 0) - \
+                 summary_data.get('verdicts', {}).get('UNDETERMINED', 0) - \
+                 summary_data.get('verdicts', {}).get('JUDGE_ERROR', 0)
+    output += f"  (Calculated from {determined} determined verdicts)\n"
     for verdict, pct in summary_data.get('verdict_percentages', {}).items():
-        output += f"  {verdict}: {pct}%\n"
+        output += f"  {verdict}: {pct:.1f}%\n"
 
     avg_conf = summary_data.get('average_confidence', 0)
-    output += f"\nAverage Confidence: {avg_conf:.3f}\n"
+    output += f"\nAverage Confidence (Determined Only): {avg_conf:.3f}\n"
 
-    output += "\nMetrics (Avg Latency / Avg Chars / Success Rate / Errors):\n"
+    output += "\nMetrics (Avg Latency / Avg Output Chars / Success Rate / Errors / Image Load Errors):\n"
     champ_metrics = summary_data.get('champion_metrics', {})
     chall_metrics = summary_data.get('challenger_metrics', {})
-    judge_metrics = summary_data.get('judge_metrics', {})
-    output += f"  Champion:   {champ_metrics.get('avg_latency', 0):.2f}s / {champ_metrics.get('avg_chars', 0)} / {champ_metrics.get('success_rate', 0):.1f}% / {champ_metrics.get('errors', 0)}\n"
-    output += f"  Challenger: {chall_metrics.get('avg_latency', 0):.2f}s / {chall_metrics.get('avg_chars', 0)} / {chall_metrics.get('success_rate', 0):.1f}% / {chall_metrics.get('errors', 0)}\n"
-    output += f"  Judge:      {judge_metrics.get('avg_latency', 0):.2f}s / {judge_metrics.get('avg_chars', 0)} / {judge_metrics.get('success_rate', 0):.1f}% / {judge_metrics.get('errors', 0)}\n"
+    judge_metrics = summary_data.get('judge_metrics', {}) # Judge metrics are calculated differently
+    output += (f"  Champion:   {champ_metrics.get('avg_latency_s', 0):.2f}s / "
+               f"{champ_metrics.get('avg_output_chars', 0)} / "
+               f"{champ_metrics.get('success_rate_pct', 0):.1f}% / "
+               f"{champ_metrics.get('errors', 0)} / "
+               f"{champ_metrics.get('image_load_errors', 0)}\n")
+    output += (f"  Challenger: {chall_metrics.get('avg_latency_s', 0):.2f}s / "
+               f"{chall_metrics.get('avg_output_chars', 0)} / "
+               f"{chall_metrics.get('success_rate_pct', 0):.1f}% / "
+               f"{chall_metrics.get('errors', 0)} / "
+               f"{chall_metrics.get('image_load_errors', 0)}\n")
+    # Judge metrics are slightly different (no image errors, success based on valid eval)
+    output += (f"  Judge:      {judge_metrics.get('avg_latency_s', 0):.2f}s / "
+               f"{judge_metrics.get('avg_output_chars', 0)} / "
+               f"{judge_metrics.get('success_rate_pct', 0):.1f}% / "
+               f"{judge_metrics.get('errors', 0)} (Errors + Undetermined)\n")
+
 
     output += f"\nDecision: {summary_data.get('decision', 'N/A')}\n"
     output += f"Reason: {summary_data.get('reason', 'N/A')}\n"
 
     return output
 
-
 def run_test_from_ui(
     # Model Configs (15 inputs)
     champ_name, champ_api_url, champ_model_id, champ_temp, champ_max_tokens,
     chall_name, chall_api_url, chall_model_id, chall_temp, chall_max_tokens,
     judge_name, judge_api_url, judge_model_id, judge_temp, judge_max_tokens,
-    # API Key (1 input) - Added
+    # API Key (1 input) - Potentially optional now
     api_key_input,
     # Prompts (2 inputs)
     model_prompt_template_input,
@@ -1200,15 +1534,16 @@ def run_test_from_ui(
     # Test Data (2 inputs)
     test_data_file,
     test_data_text,
-    # Parameters (5 inputs) - Updated to include batch retry parameters
+    # Parameters (5 inputs)
     batch_size_input,
     batch_retry_attempts_input,
     batch_backoff_factor_input,
     batch_max_wait_input,
     batch_retry_trigger_strings_input,
-    # Data Field Names (2 inputs) - Added
+    # Data Field Names (3 inputs) - Added image field name
     key_field_name_input,
     value_field_name_input,
+    image_field_name_input, # Added image field name input
     # Gradio progress object
     progress=gr.Progress(track_tqdm=True)
 ):
@@ -1221,22 +1556,30 @@ def run_test_from_ui(
     progress(0, desc="Initializing...")
 
     try:
-        # 1. Get API Key from UI input
-        api_key = str(api_key_input).strip() if api_key_input else None
-        if not api_key:
-            # Optionally check environment variable as a fallback
-            # api_key = os.getenv("OPENROUTER_API_KEY")
-            # if not api_key:
-            logger.error("API Key not provided in the UI.")
-            raise gr.Error("Error: OpenRouter API Key is required. Please enter it in the Configuration tab.")
+        # 1. Get API Key from UI input (Treat as optional, let endpoint logic handle needs)
+        # Also check environment variable as a fallback/override
+        api_key_env = os.getenv("OPENROUTER_API_KEY") or os.getenv("ANTHROPIC_API_KEY") or os.getenv("GOOGLE_API_KEY") # Add other common key names if needed
+        api_key_ui = str(api_key_input).strip() if api_key_input else None
+
+        # Prioritize UI input if provided, otherwise use environment variable
+        api_key = api_key_ui if api_key_ui else api_key_env
+
+        if api_key_ui and api_key_env and api_key_ui != api_key_env:
+             logger.warning("API Key provided via UI input overrides the environment variable.")
+        elif api_key:
+             logger.info(f"API Key found ({'UI input' if api_key_ui else 'environment variable'}).")
+        else:
+             logger.info("API Key not provided via UI input or environment variables. Only local/keyless endpoints will work.")
+
 
         progress(0.1, desc="Loading test data...")
         # 2. Load Test Cases (Pass field names from UI)
         try:
-            key_field = str(key_field_name_input).strip() or "key" # Default to "key" if empty
-            value_field = str(value_field_name_input).strip() or "value" # Default to "value" if empty
-            logger.info(f"Using key field: '{key_field}', value field: '{value_field}'")
-            test_cases = parse_test_data(test_data_file, test_data_text, key_field, value_field)
+            key_field = str(key_field_name_input).strip() or "key"
+            value_field = str(value_field_name_input).strip() or "value"
+            image_field = str(image_field_name_input).strip() or "image_url" # Default if empty
+            logger.info(f"Using data fields - Key: '{key_field}', Value: '{value_field}', Image: '{image_field}'")
+            test_cases = parse_test_data(test_data_file, test_data_text, key_field, value_field, image_field)
             logger.info(f"Loaded {len(test_cases)} test cases.")
         except ValueError as e:
             logger.error(f"Failed to load test data: {e}")
@@ -1249,22 +1592,37 @@ def run_test_from_ui(
              raise gr.Error("No valid test cases were loaded.")
 
         progress(0.2, desc="Configuring models...")
-        # 3. Create Model Endpoints (Use the api_key from UI)
+        # 3. Create Model Endpoints (Pass the potentially found api_key)
         try:
-            champion_endpoint = ModelEndpoint(
-                name=str(champ_name), api_url=str(champ_api_url), api_key=api_key, model_id=str(champ_model_id),
-                temperature=float(champ_temp), max_tokens=int(champ_max_tokens)
-            )
-            challenger_endpoint = ModelEndpoint(
-                name=str(chall_name), api_url=str(chall_api_url), api_key=api_key, model_id=str(chall_model_id),
-                temperature=float(chall_temp), max_tokens=int(chall_max_tokens)
-            )
-            judge_endpoint = ModelEndpoint(
-                name=str(judge_name), api_url=str(judge_api_url), api_key=api_key, model_id=str(judge_model_id),
-                temperature=float(judge_temp), max_tokens=int(judge_max_tokens)
-            )
+            # Helper to create endpoint, ensuring types
+            def create_ep(name, url, model_id, temp, max_tok, key):
+                 # Strip whitespace from URL and model ID
+                 url = str(url).strip() if url else ""
+                 model_id = str(model_id).strip() if model_id else ""
+                 # Basic validation
+                 if not name: raise ValueError("Model Display Name cannot be empty.")
+                 if not url: raise ValueError(f"API URL cannot be empty for model '{name}'.")
+                 if not model_id: raise ValueError(f"Model ID cannot be empty for model '{name}'.")
+                 # Use the potentially loaded key
+                 return ModelEndpoint(
+                     name=str(name), api_url=url, api_key=key, model_id=model_id,
+                     temperature=float(temp), max_tokens=int(max_tok)
+                 )
+
+            champion_endpoint = create_ep(champ_name, champ_api_url, champ_model_id, champ_temp, champ_max_tokens, api_key)
+            challenger_endpoint = create_ep(chall_name, chall_api_url, chall_model_id, chall_temp, chall_max_tokens, api_key)
+            judge_endpoint = create_ep(judge_name, judge_api_url, judge_model_id, judge_temp, judge_max_tokens, api_key)
+
+            # Log endpoints being used (mask key if present)
+            logger.info(f"Champion Endpoint: {champion_endpoint.name}, URL: {champion_endpoint.api_url}, Model: {champion_endpoint.model_id}, Key Provided: {'Yes' if champion_endpoint.api_key else 'No'}")
+            logger.info(f"Challenger Endpoint: {challenger_endpoint.name}, URL: {challenger_endpoint.api_url}, Model: {challenger_endpoint.model_id}, Key Provided: {'Yes' if challenger_endpoint.api_key else 'No'}")
+            logger.info(f"Judge Endpoint: {judge_endpoint.name}, URL: {judge_endpoint.api_url}, Model: {judge_endpoint.model_id}, Key Provided: {'Yes' if judge_endpoint.api_key else 'No'}")
+
+        except ValueError as ve:
+             logger.error(f"Model Configuration Error: {ve}")
+             raise gr.Error(f"Model Configuration Error: {ve}")
         except Exception as e:
-             logger.error(f"Error creating ModelEndpoint objects: {e}")
+             logger.error(f"Error creating ModelEndpoint objects: {e}", exc_info=True)
              raise gr.Error(f"Model Configuration Error: {e}")
 
         # 4. Instantiate ModelTester
@@ -1277,27 +1635,31 @@ def run_test_from_ui(
                 judge_prompt_template=str(judge_prompt_template_input)
             )
         except Exception as e:
-             logger.error(f"Error instantiating ModelTester: {e}")
+             logger.error(f"Error instantiating ModelTester: {e}", exc_info=True)
              raise gr.Error(f"Tester Initialization Error: {e}")
 
         # 5. Run the Test
-        logger.info(f"Running test with {len(test_cases)} cases, batch size {int(batch_size_input)}...")
+        batch_size = int(batch_size_input) if batch_size_input is not None and batch_size_input > 0 else 1
+        logger.info(f"Running test with {len(test_cases)} cases, batch size {batch_size}...")
         progress(0.3, desc="Running A/B test...")
         try:
             # Process batch retry parameters
             batch_retry_attempts = int(batch_retry_attempts_input) if batch_retry_attempts_input is not None else 0
             batch_backoff_factor = float(batch_backoff_factor_input) if batch_backoff_factor_input is not None else 2.0
             batch_max_wait = int(batch_max_wait_input) if batch_max_wait_input is not None else 60
-            
+
             # Process trigger strings (convert from comma-separated string to list)
             batch_retry_trigger_strings = None
             if batch_retry_trigger_strings_input and batch_retry_trigger_strings_input.strip():
-                batch_retry_trigger_strings = [s.strip() for s in batch_retry_trigger_strings_input.split(',') if s.strip()]
+                batch_retry_trigger_strings = [s.strip().lower() for s in batch_retry_trigger_strings_input.split(',') if s.strip()] # Lowercase for case-insensitive match later
                 logger.info(f"Using batch retry trigger strings: {batch_retry_trigger_strings}")
-            
+
+            # Make trigger strings case-insensitive in the run_test method check
+            # (Already done in list comprehension above)
+
             results = tester.run_test(
                 test_cases,
-                batch_size=int(batch_size_input),
+                batch_size=batch_size,
                 progress=progress,
                 batch_retry_attempts=batch_retry_attempts,
                 batch_backoff_factor=batch_backoff_factor,
@@ -1316,14 +1678,22 @@ def run_test_from_ui(
         if raw_evals:
              # Select and reorder columns for better display
              display_columns = ['test_id', 'winner', 'confidence', 'champion_output', 'challenger_output', 'reasoning']
-             details_df = pd.DataFrame(raw_evals)
-             # Ensure all expected columns exist, add if missing
-             for col in display_columns:
-                  if col not in details_df.columns:
-                       details_df[col] = None
-             details_df = details_df[display_columns] # Reorder/select
+             try:
+                  details_df = pd.DataFrame(raw_evals)
+                  # Ensure all expected columns exist, add if missing
+                  for col in display_columns:
+                       if col not in details_df.columns:
+                            details_df[col] = None # Add column with None if missing
+                  details_df = details_df[display_columns] # Reorder/select
+             except Exception as df_err:
+                  logger.error(f"Error creating DataFrame from results: {df_err}")
+                  summary_output += f"\n\nError displaying detailed results: {df_err}"
+                  details_df = pd.DataFrame(columns=display_columns) # Empty DF on error
         else:
-             details_df = pd.DataFrame(columns=['test_id', 'winner', 'confidence', 'reasoning']) # Empty DF with headers
+             # Handle case where no evaluations were produced (e.g., all failed/skipped)
+             details_df = pd.DataFrame(columns=display_columns) # Empty DF with headers
+             summary_output += "\n\nNote: No evaluation results were generated."
+
 
         logger.info("Test run completed successfully.")
         return summary_output, details_df
@@ -1339,14 +1709,24 @@ def run_test_from_ui(
         error_df = pd.DataFrame([{"Error": error_message}])
         return error_message, error_df
 
-
 # Function to be called by the Stop button
 def request_stop():
     global STOP_REQUESTED
-    STOP_REQUESTED = True
-    logger.warning("Stop requested via UI button.")
-    # Optionally provide feedback to the UI that stop was requested
-    # gr.Info("Stop request received. Finishing current batch...") # Requires Gradio 4+
+    if not STOP_REQUESTED:
+        STOP_REQUESTED = True
+        logger.warning("Stop requested via UI button.")
+        # Use gr.Info for user feedback if Gradio version supports it well
+        try:
+            gr.Info("Stop request received. Finishing current batch...")
+        except AttributeError: # Fallback for older Gradio versions
+            print("UI: Stop request received. Finishing current batch...")
+
+    else:
+        logger.warning("Stop already requested.")
+        try:
+            gr.Info("Stop already requested. Please wait...")
+        except AttributeError:
+             print("UI: Stop already requested. Please wait...")
 
 
 def create_ui():
@@ -1354,8 +1734,9 @@ def create_ui():
     logger.info("Creating Gradio UI...")
 
     # Default values for UI components
-    default_api_url = "https://openrouter.ai/api/v1/chat/completions"
-    default_model_prompt = "Answer the following question: {key}"
+    default_api_url_openrouter = "https://openrouter.ai/api/v1/chat/completions"
+    default_api_url_ollama = "http://localhost:11434/api/generate" # Default Ollama URL
+    default_model_prompt = "User: {key}\nAssistant:" # Example prompt
     # Use the default judge prompt from the LMJudge class
     default_judge_prompt = LMJudge.DEFAULT_EVALUATION_PROMPT
 
@@ -1363,57 +1744,69 @@ def create_ui():
     .model-config-group .gr-form { background-color: #f0f0f0; padding: 10px; border-radius: 5px; margin-bottom: 10px; }
     .model-config-group .gr-form > :first-child { font-weight: bold; margin-bottom: 5px; } /* Style the label */
     .results-box { border: 1px solid #ccc; padding: 15px; border-radius: 5px; margin-top: 15px; }
-    .api-key-warning { color: orange; font-weight: bold; margin-bottom: 15px; }
+    .api-key-warning { color: #cc5500; font-weight: bold; margin-bottom: 15px; }
     """
 
     with gr.Blocks(css=css, theme=gr.themes.Soft()) as iface:
         gr.Markdown("# Model A/B Testing & Evaluation Tool")
         gr.Markdown(
-            "Configure champion, challenger, and judge models, provide test data, "
+            "Configure champion, challenger, and judge models, provide test data (including optional images), "
             "and run evaluations to compare model performance."
         )
         gr.Markdown(
-            "**Note:** The `OPENROUTER_API_KEY` environment variable must be set in the environment "
-            "where this Gradio app is running for API calls to succeed.",
+            """**API Key**: Optional. Enter if needed for cloud endpoints (OpenRouter, Anthropic, Gemini, etc.).
+            If blank, the tool will try common environment variables (`OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`, etc.).
+            Leave blank/unset if using only local endpoints (like Ollama).""",
             elem_classes="api-key-warning"
         )
+        gr.Markdown(
+            """**Multimodal Input**: To use image inputs:
+            1. Ensure your test data (CSV/JSON/JSONL) includes a column/field containing the **local path** or **public URL** to the image.
+            2. Specify this column/field name in the 'Image Field Name' box below.
+            3. Ensure your models and endpoints support multimodal input (e.g., GPT-4o, Claude 3, LLaVA via Ollama).
+            4. The model prompt should instruct the model on what to do with the image (e.g., 'Describe this image.', 'What text is in the image provided?').""",
+            elem_classes="api-key-warning"
+        )
+
 
         with gr.Tabs():
             with gr.TabItem("Configuration"):
                 # Add API Key input field
                 with gr.Row():
                      api_key_input = gr.Textbox(
-                          label="OpenRouter API Key",
+                          label="API Key (Optional - Overrides Environment Variable)",
                           type="password",
-                          placeholder="Enter key here (required to run tests)",
-                          info="Overrides OPENROUTER_API_KEY environment variable if set."
+                          placeholder="Enter key if required and not set via ENV",
+                          info="Overrides OPENROUTER_API_KEY etc. if set. Leave blank to use ENV or for local models."
                      )
                 with gr.Row():
                     # Champion Model Configuration
                     with gr.Column(scale=1):
                          with gr.Group(elem_classes="model-config-group"):
                               gr.Label("Champion Model (Model A)")
-                              champ_name = gr.Textbox(label="Display Name", value="Champion (Gemini Flash)")
-                              champ_api_url = gr.Textbox(label="API URL", value=default_api_url)
-                              champ_model_id = gr.Textbox(label="Model ID", value="google/gemini-2.0-flash-exp:free")
+                              # Updated example for Ollama Mistral 3.1 (as requested default)
+                              champ_name = gr.Textbox(label="Display Name", value="Champion (Ollama Mistral)")
+                              champ_api_url = gr.Textbox(label="API URL", value=default_api_url_ollama) # Ollama default
+                              champ_model_id = gr.Textbox(label="Model ID", value="mistral:latest") # Check actual Ollama model name
                               champ_temp = gr.Slider(label="Temperature", minimum=0.0, maximum=2.0, step=0.1, value=0.1)
                               champ_max_tokens = gr.Number(label="Max Tokens", value=1024, precision=0)
                     # Challenger Model Configuration
                     with gr.Column(scale=1):
                          with gr.Group(elem_classes="model-config-group"):
                               gr.Label("Challenger Model (Model B)")
-                              chall_name = gr.Textbox(label="Display Name", value="Challenger (Gemma 3 27B)")
-                              chall_api_url = gr.Textbox(label="API URL", value=default_api_url)
-                              chall_model_id = gr.Textbox(label="Model ID", value="google/gemma-3-27b-it:free")
+                              # Updated examples for Ollama Gemma 3 27B (as requested default)
+                              chall_name = gr.Textbox(label="Display Name", value="Challenger (Ollama Gemma2 9B)") # Smaller default for faster testing
+                              chall_api_url = gr.Textbox(label="API URL", value=default_api_url_ollama) # User request
+                              chall_model_id = gr.Textbox(label="Model ID", value="gemma2:9b") # Smaller default
                               chall_temp = gr.Slider(label="Temperature", minimum=0.0, maximum=2.0, step=0.1, value=0.1)
-                              chall_max_tokens = gr.Number(label="Max Tokens", value=1024, precision=0)
+                              chall_max_tokens = gr.Number(label="Max Tokens", value=2048, precision=0) # Gemma might need more tokens
                     # Judge Model Configuration
                     with gr.Column(scale=1):
                          with gr.Group(elem_classes="model-config-group"):
                               gr.Label("Judge Model")
-                              judge_name = gr.Textbox(label="Display Name", value="Judge (Gemini 2.5 Pro)")
-                              judge_api_url = gr.Textbox(label="API URL", value=default_api_url)
-                              judge_model_id = gr.Textbox(label="Model ID", value="google/gemini-2.5-pro-exp-03-25:free")
+                              judge_name = gr.Textbox(label="Display Name", value="Judge (GPT-4o Mini - OR)") # Default Judge
+                              judge_api_url = gr.Textbox(label="API URL", value=default_api_url_openrouter) # Using OpenRouter for judge
+                              judge_model_id = gr.Textbox(label="Model ID", value="openai/gpt-4o-mini") # Powerful judge
                               judge_temp = gr.Slider(label="Temperature", minimum=0.0, maximum=1.0, step=0.1, value=0.0) # Judge usually deterministic
                               judge_max_tokens = gr.Number(label="Max Tokens", value=2048, precision=0) # Judge might need more tokens
 
@@ -1431,7 +1824,7 @@ def create_ui():
                     with gr.Column(scale=1):
                         gr.Markdown("### Judge Prompt Template")
                         judge_prompt_template_input = gr.Textbox(
-                            label="Template for Judge (see code/docs for available placeholders like {key}, {champion_output}, etc.)",
+                            label="Template for Judge (see code/docs for available placeholders)",
                             value=default_judge_prompt,
                             lines=15,
                             show_copy_button=True
@@ -1441,24 +1834,24 @@ def create_ui():
                     # Test Data Input
                     with gr.Column(scale=1):
                         gr.Markdown("### Test Data")
-                        gr.Markdown("Upload a CSV/JSON/JSONL file or paste data below. Specify the field names containing the model input (key) and optional reference answer (value). Add an `id` field for stable identification.")
+                        gr.Markdown("Upload a CSV/JSON/JSONL file or paste data below. Specify the field names containing the model input (key), optional reference answer (value), and optional image path/URL. Add an `id` field for stable identification (recommended).")
                         test_data_file = gr.File(label="Upload Test Data (CSV, JSON, JSONL/NDJSON)", file_types=[".csv", ".json", ".jsonl", ".ndjson"])
-                        test_data_text = gr.Textbox(label="Or Paste Test Data (JSON list format)", lines=8, placeholder='[{"id": "t1", "question": "Input 1", "reference_answer": "Expected 1"}, ...]')
-                        # Add options for CSV parsing later if needed (delimiter, quote char)
+                        test_data_text = gr.Textbox(label="Or Paste Test Data (JSON list or JSONL format)", lines=8, placeholder='[{"id": "t1", "prompt": "Describe image", "image_url": "/path/to/img.jpg", "reference": "..."}]\n{"id": "t2", "prompt": "Question text", "image_url": null, "reference": "..."}')
                         with gr.Row():
-                             key_field_name_input = gr.Textbox(label="Key Field Name", value="question", info="Field containing the main input/prompt.") # Default updated
-                             value_field_name_input = gr.Textbox(label="Value Field Name", value="reference_answer", info="Field containing the reference/ground truth (optional).") # Default updated
+                             key_field_name_input = gr.Textbox(label="Key Field Name", value="caption", info="Field containing the text input/prompt.") # Updated default for train.csv
+                             value_field_name_input = gr.Textbox(label="Value Field Name", value="name", info="Field containing the reference/ground truth (optional).") # Updated default for train.csv
+                             image_field_name_input = gr.Textbox(label="Image Field Name", value="image_url", info="Field containing the image path or URL (optional).") # Added image field input
 
                     # Test Run Parameters
                     with gr.Column(scale=1):
                         gr.Markdown("### Test Parameters")
-                        batch_size_input = gr.Number(label="Batch Size", value=5, precision=0)
-                        
+                        batch_size_input = gr.Number(label="Batch Size", value=5, minimum=1, precision=0)
+
                         # Add batch retry parameters
                         gr.Markdown("#### Batch Retry Settings")
                         batch_retry_attempts_input = gr.Number(
                             label="Batch Retry Attempts",
-                            value=0,
+                            value=1, # Default to 1 retry
                             precision=0,
                             minimum=0,
                             info="Number of times to retry a batch if trigger strings are found (0 = no retries)"
@@ -1469,7 +1862,7 @@ def create_ui():
                             minimum=1.0,
                             maximum=5.0,
                             step=0.1,
-                            info="Factor for exponential backoff between retries (e.g., 2.0 means wait times of 1s, 2s, 4s, 8s...)"
+                            info="Factor for exponential backoff between retries (e.g., 2.0 waits 1s, 2s, 4s...)"
                         )
                         batch_max_wait_input = gr.Number(
                             label="Maximum Wait Time (seconds)",
@@ -1479,9 +1872,9 @@ def create_ui():
                             info="Maximum wait time between retries in seconds"
                         )
                         batch_retry_trigger_strings_input = gr.Textbox(
-                            label="Retry Trigger Strings",
-                            placeholder="Enter comma-separated strings that will trigger a retry when found in responses",
-                            info="Comma-separated list of strings that will trigger a batch retry when found in model responses or judge reasoning"
+                            label="Retry Trigger Strings (Comma-separated)",
+                            placeholder="e.g., rate limit,error,timeout,empty response",
+                            info="Retry batch if these strings appear in model/judge output (case-insensitive check)"
                         )
                         # Add preprocessing options later if needed
 
@@ -1492,10 +1885,10 @@ def create_ui():
                     stop_button = gr.Button("Stop Test", variant="stop", scale=1) # Add stop button
                 with gr.Group(elem_classes="results-box"):
                      gr.Markdown("#### Summary")
-                     summary_output = gr.Textbox(label="Overall Results", lines=10, show_copy_button=True)
+                     summary_output = gr.Textbox(label="Overall Results", lines=15, show_copy_button=True, interactive=False)
                 with gr.Group(elem_classes="results-box"):
                      gr.Markdown("#### Detailed Evaluations")
-                     details_output = gr.DataFrame(label="Individual Case Results", wrap=True) # Use DataFrame for better display
+                     details_output = gr.DataFrame(label="Individual Case Results", wrap=True, interactive=False) # Use DataFrame for better display
 
         # Define interactions
         run_button.click(
@@ -1505,7 +1898,7 @@ def create_ui():
                 champ_name, champ_api_url, champ_model_id, champ_temp, champ_max_tokens,
                 chall_name, chall_api_url, chall_model_id, chall_temp, chall_max_tokens,
                 judge_name, judge_api_url, judge_model_id, judge_temp, judge_max_tokens,
-                # API Key - Added
+                # API Key
                 api_key_input,
                 # Prompts
                 model_prompt_template_input,
@@ -1519,67 +1912,104 @@ def create_ui():
                 batch_backoff_factor_input,
                 batch_max_wait_input,
                 batch_retry_trigger_strings_input,
-                # Data Field Names - Added
+                # Data Field Names
                 key_field_name_input,
-                value_field_name_input
+                value_field_name_input,
+                image_field_name_input # Pass image field name
             ],
             outputs=[summary_output, details_output]
         )
 
         # Wire the stop button
-        stop_button.click(fn=request_stop)
+        stop_button.click(fn=request_stop, inputs=None, outputs=None)
 
     return iface
-
 
 def run_cli_test():
     """Runs the A/B test from the command line using hardcoded examples."""
     logger.info("Starting CLI execution of ModelTester...")
 
-     # --- Configuration (Requires OPENROUTER_API_KEY environment variable) ---
-    OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-    if not OPENROUTER_API_KEY:
-        logger.error("Error: OPENROUTER_API_KEY environment variable not set.")
-        print("\nError: Please set the OPENROUTER_API_KEY environment variable before running.")
-        sys.exit(1) # Exit if the key is missing
-    else:
-        logger.info("OPENROUTER_API_KEY environment variable found.")
+    # --- Configuration (API Key optional for local models) ---
+    # Load API keys from .env file if it exists
+    try:
+        from dotenv import load_dotenv
+        if load_dotenv():
+             logger.info("Loaded environment variables from .env file.")
+        else:
+             logger.info(".env file not found or empty, relying on system environment variables or UI input.")
+    except ImportError:
+        logger.warning("python-dotenv not installed, cannot load .env file. Run 'pip install python-dotenv' or ensure packages are installed.")
 
+    OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY") # Still useful for judge or cloud models
+    OLLAMA_API_URL = "http://localhost:11434/api/generate"
 
-    # Define Model Endpoints (Example using OpenRouter)
+    # Define Model Endpoints
+    # Using Ollama Mistral as Champion
     champion_model = ModelEndpoint(
-        name="Champion (GPT-3.5)",
-        api_url="https://openrouter.ai/api/v1/chat/completions",
-        api_key=OPENROUTER_API_KEY,
-        model_id="openai/gpt-3.5-turbo", # Example model
+        name="Champion (Ollama Mistral)",
+        api_url=OLLAMA_API_URL,
+        api_key=None, # No key needed for local Ollama
+        model_id="mistral:latest", # Adjust if your model name is different
         temperature=0.1
     )
 
+    # Using Ollama Gemma 2 9B as Challenger
     challenger_model = ModelEndpoint(
-        name="Challenger (Claude)",
-        api_url="https://openrouter.ai/api/v1/chat/completions",
-        api_key=OPENROUTER_API_KEY,
-        model_id="anthropic/claude-3-haiku-20240307", # Example model
-        temperature=0.1
+        name="Challenger (Ollama Gemma2 9B)",
+        api_url=OLLAMA_API_URL,
+        api_key=None, # No key needed
+        model_id="hf.co/stduhpf/google-gemma-3-27b-it-qat-q4_0-gguf-small:latest", # Updated to match ollama list
+        temperature=0.1,
+        max_tokens=2048
     )
 
-    judge_model = ModelEndpoint(
-        name="Judge (GPT-4)",
-        api_url="https://openrouter.ai/api/v1/chat/completions",
-        api_key=OPENROUTER_API_KEY,
-        model_id="openai/gpt-4-turbo", # Example judge model
-        temperature=0.0
-    )
+    # Using OpenRouter GPT-4o Mini as Judge (Requires API Key)
+    if not OPENROUTER_API_KEY:
+         logger.warning("OPENROUTER_API_KEY not set (checked ENV and .env). Using Champion model as Judge (less ideal).")
+         judge_model = champion_model # Fallback judge
+         judge_model.name = "Judge (Fallback - Ollama Mistral)"
+    else:
+         logger.info("Using OpenRouter API Key for Judge.")
+         judge_model = ModelEndpoint(
+             name="Judge (GPT-4o Mini - OR)",
+             api_url="https://openrouter.ai/api/v1/chat/completions",
+             api_key=OPENROUTER_API_KEY,
+             model_id="openai/gpt-4o-mini",
+             temperature=0.0,
+             max_tokens=2048
+         )
 
-    # Define Model Prompt Template (Simple example)
-    model_prompt = "Answer the following question: {key}"
+    # Define Model Prompt Template
+    model_prompt = "User: {key}\nAssistant:"
 
-    # Define Sample Test Cases
+    # Define Sample Test Cases (Including Multimodal Example)
+    # Create a dummy image file for testing if it doesn't exist
+    dummy_image_path = "dummy_test_image.png"
+    if not os.path.exists(dummy_image_path):
+        try:
+            from PIL import Image, ImageDraw
+            img = Image.new('RGB', (100, 50), color = (73, 109, 137)) # Blueish background
+            d = ImageDraw.Draw(img)
+            d.text((10,10), "Test Img", fill=(255,255,0)) # Yellow text
+            img.save(dummy_image_path)
+            logger.info(f"Created dummy image file: {dummy_image_path}")
+        except ImportError:
+            logger.warning("Pillow (PIL) not installed, cannot create dummy image for CLI test. Ensure packages are installed via venv setup.")
+            dummy_image_path = None # Cannot use image test case
+        except Exception as e:
+             logger.error(f"Failed to create dummy image: {e}")
+             dummy_image_path = None
+
+
     test_cases = [
-        TestCase(id="q1", key="What is the capital of France?", value="Paris"),
-        TestCase(id="q2", key="Summarize the main points of the article about AI.", value="AI advancements, ethical concerns, future outlook."),
-        # Add more test cases or load from a file
+        TestCase(id="q1", key="What is the capital of France?", value="Paris", image_path_or_url=None),
+        TestCase(id="q2", key="Summarize the plot of the movie 'Inception'.", value="A thief steals information by entering people's dreams.", image_path_or_url=None),
     ]
+    if dummy_image_path:
+         test_cases.append(TestCase(id="img1", key=f"Describe this image.", value="Blue rectangle with yellow text 'Test Img'", image_path_or_url=dummy_image_path))
+    else:
+         logger.warning("Skipping multimodal test case in CLI as dummy image could not be created.")
+
 
     # --- Execution ---
     try:
@@ -1589,67 +2019,63 @@ def run_cli_test():
             challenger_endpoint=challenger_model,
             judge_endpoint=judge_model,
             model_prompt_template=model_prompt,
-            # judge_prompt_template=LMJudge.DEFAULT_EVALUATION_PROMPT # Use default judge prompt for CLI
+            judge_prompt_template=LMJudge.DEFAULT_EVALUATION_PROMPT # Use default judge prompt
         )
 
         logger.info(f"Running CLI test with {len(test_cases)} test cases...")
-        # Run the test (batch size can be adjusted)
+        # Run the test
         results = tester.run_test(
             test_cases,
-            batch_size=2, # Using a small batch size for testing
-            batch_retry_attempts=2, # Example: retry up to 2 times
-            batch_backoff_factor=2.0, # Example: exponential backoff with factor of 2
-            batch_max_wait=30, # Example: maximum wait time of 30 seconds
-            batch_retry_trigger_strings=["rate limit", "error", "timeout"] # Example trigger strings
+            batch_size=2,
+            batch_retry_attempts=1,
+            batch_backoff_factor=2.0,
+            batch_max_wait=30,
+            batch_retry_trigger_strings=["rate limit", "error", "timeout"]
         )
 
         # --- Output Results ---
         logger.info("Test completed. Final Results:")
 
-        # Pretty print the summary
-        summary = results.get("summary", {})
-        print("\n--- Test Summary ---")
-        print(f"Champion: {summary.get('champion_name', 'N/A')}")
-        print(f"Challenger: {summary.get('challenger_name', 'N/A')}")
-        print(f"Judge: {summary.get('judge_name', 'N/A')}")
-        print(f"Total Test Cases: {summary.get('total_test_cases', 'N/A')}")
-        print("\nVerdicts:")
-        for verdict, count in summary.get('verdicts', {}).items():
-            print(f"  {verdict}: {count}")
-        print("\nVerdict Percentages (Determined Only):")
-        for verdict, pct in summary.get('verdict_percentages', {}).items():
-            print(f"  {verdict}: {pct}%")
-        print(f"\nAverage Confidence: {summary.get('average_confidence', 'N/A'):.3f}")
+        # Use the formatter function
+        summary_output = format_summary_output(results.get("summary", {}))
+        print("\n" + summary_output)
 
-        print("\nMetrics (Avg Latency / Avg Chars / Success Rate / Errors):")
-        champ_metrics = summary.get('champion_metrics', {})
-        chall_metrics = summary.get('challenger_metrics', {})
-        judge_metrics = summary.get('judge_metrics', {})
-        print(f"  Champion:   {champ_metrics.get('avg_latency', 0):.2f}s / {champ_metrics.get('avg_chars', 0)} / {champ_metrics.get('success_rate', 0):.1f}% / {champ_metrics.get('errors', 0)}")
-        print(f"  Challenger: {chall_metrics.get('avg_latency', 0):.2f}s / {chall_metrics.get('avg_chars', 0)} / {chall_metrics.get('success_rate', 0):.1f}% / {chall_metrics.get('errors', 0)}")
-        print(f"  Judge:      {judge_metrics.get('avg_latency', 0):.2f}s / {judge_metrics.get('avg_chars', 0)} / {judge_metrics.get('success_rate', 0):.1f}% / {judge_metrics.get('errors', 0)}")
-
-
-        print(f"\nDecision: {summary.get('decision', 'N/A')}")
-        print(f"Reason: {summary.get('reason', 'N/A')}")
 
         # Optionally save full results to JSON
-        results_filename = f"results_{time.strftime('%Y%m%d-%H%M%S')}.json"
+        results_filename = f"cli_results_{time.strftime('%Y%m%d-%H%M%S')}.json"
         try:
-            with open(results_filename, 'w') as f:
-                json.dump(results, f, indent=2)
+            # Need to ensure results are serializable (dataclasses might need conversion)
+            # The aggregator already converts raw evals to dicts. Summary should be fine.
+            with open(results_filename, 'w', encoding='utf-8') as f:
+                json.dump(results, f, indent=2, ensure_ascii=False)
             logger.info(f"Full results saved to {results_filename}")
             print(f"\nFull results saved to: {results_filename}")
+        except TypeError as e:
+             logger.error(f"Failed to save results to JSON due to serialization issue: {e}")
+             print(f"\nWarning: Could not save full results to JSON: {e}")
         except Exception as e:
             logger.error(f"Failed to save results to JSON: {e}")
+            print(f"\nWarning: Could not save full results to JSON: {e}")
+
 
     except Exception as e:
         logger.exception("An error occurred during the CLI execution.")
         print(f"\nAn error occurred during CLI execution: {e}")
+    finally:
+        # Clean up dummy image if created and path exists
+        if dummy_image_path and os.path.exists(dummy_image_path):
+             try:
+                 os.remove(dummy_image_path)
+                 logger.info(f"Removed dummy image file: {dummy_image_path}")
+             except Exception as e:
+                 logger.warning(f"Could not remove dummy image file {dummy_image_path}: {e}")
 
+# ==============================================================================
+# Main Execution Logic
+# ==============================================================================
 
-# --- Main Entry Point ---
-if __name__ == "__main__":
+def main():
+    """Main function to parse arguments and run either CLI or UI."""
     # Basic argument parsing: run CLI test by default, or launch UI with --ui flag
     import argparse
     parser = argparse.ArgumentParser(description="Model A/B Testing Tool")
@@ -1658,16 +2084,16 @@ if __name__ == "__main__":
 
     if args.ui:
         logger.info("Launching Gradio UI...")
-        # Placeholder for launching the UI
         iface = create_ui()
         if iface:
-             # Add authentication later if needed: auth=("username", "password")
-             iface.launch()
+             # Add share=True for public link if needed, auth=("user", "pass") for security
+             # Add server_name="0.0.0.0" to listen on all interfaces if running in Docker/remote
+             iface.launch(share=True)
         else:
              logger.error("Failed to create Gradio UI.")
              print("Error: Could not create the Gradio UI.")
     else:
-        # Set up signal handler for CLI stop
+        # Set up signal handler for CLI stop (Ctrl+C)
         def signal_handler(sig, frame):
             global STOP_REQUESTED
             if not STOP_REQUESTED:
@@ -1675,11 +2101,23 @@ if __name__ == "__main__":
                 logger.warning("Stop requested via Ctrl+C.")
                 STOP_REQUESTED = True
             else:
+                # Allow force exit on second Ctrl+C
                 print("\nCtrl+C detected again. Forcing exit.")
                 logger.error("Forced exit via second Ctrl+C.")
-                sys.exit(1) # Force exit on second Ctrl+C
+                sys.exit(1)
 
         signal.signal(signal.SIGINT, signal_handler)
 
         # Run the command-line test
         run_cli_test()
+
+
+if __name__ == "__main__":
+    # Ensure we are running in the correct virtual environment
+    # ensure_venv() will handle creation, installation, and re-execution if necessary.
+    # If ensure_venv() returns True, it means we are now in the correct venv.
+    if ensure_venv():
+        # Now that we are confirmed to be in the venv, execute the main logic
+        main()
+    # If ensure_venv() returned False (or exited), the script either failed or restarted itself.
+
