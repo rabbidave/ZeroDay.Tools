@@ -249,6 +249,7 @@ class ModelRunner:
                 response = requests.get(image_path_or_url, stream=True, timeout=20) # Increased timeout
                 response.raise_for_status()
                 image_bytes = response.content
+                logger.info(f"Successfully downloaded {len(image_bytes)} bytes from URL.")
                 # Try to get mime type from headers first
                 mime_type = response.headers.get('content-type')
             else:
@@ -264,6 +265,7 @@ class ModelRunner:
 
             mime_type = mime_type or 'image/jpeg' # Default if guess fails or not available
             base64_image = base64.b64encode(image_bytes).decode('utf-8')
+            logger.info(f"Successfully encoded image to base64. Mime type: {mime_type}")
             logger.info(f"Successfully loaded and encoded image from {image_path_or_url[:50]}... Type: {mime_type}, Size: {len(base64_image)} chars base64")
             return base64_image, mime_type
         except FileNotFoundError:
@@ -286,6 +288,7 @@ class ModelRunner:
         base64_image = None
         mime_type = None
 
+        logger.info(f"Inside generate for model '{self.endpoint.name}', test_id: {test_case.id}. Image path/URL from test case: {test_case.image_path_or_url}")
         try:
             # Preprocess the input key using the global settings
             preprocessed_key = preprocess_text(test_case.key)
@@ -312,6 +315,7 @@ class ModelRunner:
             if test_case.image_path_or_url:
                 logger.info(f"Test case {test_case.id} includes image: {test_case.image_path_or_url}")
                 base64_image, mime_type = self._load_and_encode_image(test_case.image_path_or_url)
+                logger.info(f"Result from _load_and_encode_image - Has image: {bool(base64_image)}, Mime type: {mime_type}")
                 if base64_image is None:
                     # Handle image loading failure - return an error response
                     logger.error(f"Failed to load image for test case {test_case.id}. Returning error.")
@@ -405,8 +409,10 @@ class ModelRunner:
 
         # Construct messages payload - handling multimodal input
         messages = []
+        logger.info(f"Checking for image data before constructing payload. Has image: {bool(image_base64)}, Mime type: {mime_type}")
         if image_base64:
             logger.info("Constructing OpenAI multimodal payload.")
+            logger.info("Image data found. Proceeding with multimodal payload construction.") # Indentation should be correct relative to if block
             # Ensure mime_type is set, default if necessary
             mime_type = mime_type or 'image/jpeg'
             messages.append({
@@ -422,6 +428,7 @@ class ModelRunner:
         else:
             # Text-only payload
             logger.info("Constructing OpenAI text-only payload.")
+            logger.info("No image data found or image loading failed. Proceeding with text-only payload construction.") # Indentation should be correct relative to else block
             messages.append({"role": "user", "content": prompt})
 
         data = {
@@ -544,12 +551,12 @@ class ModelRunner:
             "model": self.endpoint.model_id,
             "prompt": prompt,
             "stream": False, # Ensure we get the full response at once
-            "options": {
-                "temperature": self.endpoint.temperature,
-                # Add num_predict if max_tokens is set and > 0
-                # Ollama might ignore it if the model doesn't support it well
-                 **({"num_predict": self.endpoint.max_tokens} if self.endpoint.max_tokens > 0 else {})
-            }
+            # "options": {
+            #     "temperature": self.endpoint.temperature,
+            #     # Add num_predict if max_tokens is set and > 0
+            #     # Ollama might ignore it if the model doesn't support it well
+            #      **({"num_predict": self.endpoint.max_tokens} if self.endpoint.max_tokens > 0 else {})
+            # }
         }
 
         # Add image data if provided
@@ -1785,30 +1792,30 @@ def create_ui():
                          with gr.Group(elem_classes="model-config-group"):
                               gr.Label("Champion Model (Model A)")
                               # Updated example for Ollama Mistral 3.1 (as requested default)
-                              champ_name = gr.Textbox(label="Display Name", value="Champion (Ollama Mistral)")
-                              champ_api_url = gr.Textbox(label="API URL", value=default_api_url_ollama) # Ollama default
-                              champ_model_id = gr.Textbox(label="Model ID", value="mistral:latest") # Check actual Ollama model name
+                              champ_name = gr.Textbox(label="Display Name", value="Champion (LM Studio Gemma 3 12B)")
+                              champ_api_url = gr.Textbox(label="API URL", value="http://localhost:1234/v1/chat/completions") # LM Studio OpenAI endpoint
+                              champ_model_id = gr.Textbox(label="Model ID", value="gemma-3-12b-it") # User specified
                               champ_temp = gr.Slider(label="Temperature", minimum=0.0, maximum=2.0, step=0.1, value=0.1)
-                              champ_max_tokens = gr.Number(label="Max Tokens", value=1024, precision=0)
+                              champ_max_tokens = gr.Number(label="Max Tokens", value=8192, precision=0)
                     # Challenger Model Configuration
                     with gr.Column(scale=1):
                          with gr.Group(elem_classes="model-config-group"):
                               gr.Label("Challenger Model (Model B)")
                               # Updated examples for Ollama Gemma 3 27B (as requested default)
-                              chall_name = gr.Textbox(label="Display Name", value="Challenger (Ollama Gemma2 9B)") # Smaller default for faster testing
-                              chall_api_url = gr.Textbox(label="API URL", value=default_api_url_ollama) # User request
-                              chall_model_id = gr.Textbox(label="Model ID", value="gemma2:9b") # Smaller default
+                              chall_name = gr.Textbox(label="Display Name", value="Challenger (LM Studio Gemma 3 4B)")
+                              chall_api_url = gr.Textbox(label="API URL", value="http://localhost:1234/v1/chat/completions") # LM Studio OpenAI endpoint
+                              chall_model_id = gr.Textbox(label="Model ID", value="gemma-3-4b-it") # User specified
                               chall_temp = gr.Slider(label="Temperature", minimum=0.0, maximum=2.0, step=0.1, value=0.1)
-                              chall_max_tokens = gr.Number(label="Max Tokens", value=2048, precision=0) # Gemma might need more tokens
+                              chall_max_tokens = gr.Number(label="Max Tokens", value=8192, precision=0)
                     # Judge Model Configuration
                     with gr.Column(scale=1):
                          with gr.Group(elem_classes="model-config-group"):
                               gr.Label("Judge Model")
-                              judge_name = gr.Textbox(label="Display Name", value="Judge (GPT-4o Mini - OR)") # Default Judge
-                              judge_api_url = gr.Textbox(label="API URL", value=default_api_url_openrouter) # Using OpenRouter for judge
-                              judge_model_id = gr.Textbox(label="Model ID", value="openai/gpt-4o-mini") # Powerful judge
+                              judge_name = gr.Textbox(label="Display Name", value="Judge (LM Studio Gemma 3 27B)")
+                              judge_api_url = gr.Textbox(label="API URL", value="http://localhost:1234/v1/chat/completions") # LM Studio OpenAI endpoint
+                              judge_model_id = gr.Textbox(label="Model ID", value="hf.co/stduhpf/google-gemma-3-27b-it-qat-q4_0-gguf-small:latest") # User specified
                               judge_temp = gr.Slider(label="Temperature", minimum=0.0, maximum=1.0, step=0.1, value=0.0) # Judge usually deterministic
-                              judge_max_tokens = gr.Number(label="Max Tokens", value=2048, precision=0) # Judge might need more tokens
+                              judge_max_tokens = gr.Number(label="Max Tokens", value=8192, precision=0) # Judge might need more tokens
 
                 with gr.Row():
                     # Model Prompt Template
@@ -1838,8 +1845,8 @@ def create_ui():
                         test_data_file = gr.File(label="Upload Test Data (CSV, JSON, JSONL/NDJSON)", file_types=[".csv", ".json", ".jsonl", ".ndjson"])
                         test_data_text = gr.Textbox(label="Or Paste Test Data (JSON list or JSONL format)", lines=8, placeholder='[{"id": "t1", "prompt": "Describe image", "image_url": "/path/to/img.jpg", "reference": "..."}]\n{"id": "t2", "prompt": "Question text", "image_url": null, "reference": "..."}')
                         with gr.Row():
-                             key_field_name_input = gr.Textbox(label="Key Field Name", value="caption", info="Field containing the text input/prompt.") # Updated default for train.csv
-                             value_field_name_input = gr.Textbox(label="Value Field Name", value="name", info="Field containing the reference/ground truth (optional).") # Updated default for train.csv
+                             key_field_name_input = gr.Textbox(label="Key Field Name", value="name", info="Field containing the text input/prompt.") # Swapped default
+                             value_field_name_input = gr.Textbox(label="Value Field Name", value="caption", info="Field containing the reference/ground truth (optional).") # Swapped default
                              image_field_name_input = gr.Textbox(label="Image Field Name", value="image_url", info="Field containing the image path or URL (optional).") # Added image field input
 
                     # Test Run Parameters
