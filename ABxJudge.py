@@ -700,12 +700,13 @@ class LMJudge:
     DEFAULT_EVALUATION_PROMPT = """
 # Model Response Evaluation
 
-You are evaluating two AI model responses based on the input query and potentially a reference value.
+You are evaluating two AI model responses based on the input query, potentially an accompanying image, and potentially a reference value.
 
 ## Input Query
 
 {key}
 
+{image_context_section}
 {reference_section}
 
 ## Model A (Champion: {champion_name}) Response
@@ -773,10 +774,15 @@ CONFIDENCE: 4/5
         clarity_criteria_number_text = '3' if has_reference else '2'
         overall_criteria_number_text = '4' if has_reference else '3'
 
+        # Add image context section if an image was provided in the original test case
+        has_image = bool(test_case.image_path_or_url)
+        image_context_section_text = "\n## Input Image\nAn image was provided with the input query. Consider it as context when evaluating the responses.\n" if has_image else ""
+
         # Format the evaluation prompt using the template and context
         try:
             evaluation_prompt = self.evaluation_prompt_template.format(
                 key=preprocessed_key,
+                image_context_section=image_context_section_text, # Added image context
                 reference_section=reference_section_text,
                 champion_name=champion_response.model_name,
                 champion_output=preprocessed_champion,
@@ -803,7 +809,8 @@ CONFIDENCE: 4/5
         judge_test_case = TestCase(
             key=evaluation_prompt,
             value="", # No value needed for judge call itself
-            image_path_or_url=None, # Judge is text-only
+            # Pass the original image path/URL to the judge if it exists
+            image_path_or_url=test_case.image_path_or_url,
             id=f"judge-{test_case.id or 'unknown'}"
         )
         judge_response_obj = self.model_runner.generate(judge_test_case)
