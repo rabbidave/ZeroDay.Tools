@@ -1813,7 +1813,7 @@ def create_ui():
                               gr.Label("Judge Model")
                               judge_name = gr.Textbox(label="Display Name", value="Judge (LM Studio Gemma 3 27B)")
                               judge_api_url = gr.Textbox(label="API URL", value="http://localhost:1234/v1/chat/completions") # LM Studio OpenAI endpoint
-                              judge_model_id = gr.Textbox(label="Model ID", value="hf.co/stduhpf/google-gemma-3-27b-it-qat-q4_0-gguf-small:latest") # User specified
+                              judge_model_id = gr.Textbox(label="Model ID", value="gemma-3-27b-it") # User specified
                               judge_temp = gr.Slider(label="Temperature", minimum=0.0, maximum=1.0, step=0.1, value=0.0) # Judge usually deterministic
                               judge_max_tokens = gr.Number(label="Max Tokens", value=8192, precision=0) # Judge might need more tokens
 
@@ -1823,7 +1823,7 @@ def create_ui():
                         gr.Markdown("### Model Prompt Template")
                         model_prompt_template_input = gr.Textbox(
                             label="Template for Champion/Challenger (use {key} for input)",
-                            value=default_model_prompt,
+                            value="{key}\nUser: Provide a detailed description\nAssistant:",
                             lines=5,
                             show_copy_button=True
                         )
