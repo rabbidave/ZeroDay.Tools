@@ -118,6 +118,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 from tenacity import retry, stop_after_attempt, wait_exponential
 import csv
 import io
+import tempfile # Added for JSONL download
 from urllib.parse import urlparse
 import base64
 import mimetypes
@@ -1212,12 +1213,14 @@ class ModelTester:
                         # Use the latency calculated just before (judge_latency variable)
                         judge_lat = round(judge_latency, 3)
 
+                        # Yield the full evaluation result (as dict) for intermediate updates
                         yield {
                             "type": "update",
                             "image_path": image_to_display,
                             "champ_latency": champ_lat,
                             "chall_latency": chall_lat,
-                            "judge_latency": judge_lat
+                            "judge_latency": judge_lat,
+                            "evaluation": evaluation_result.__dict__ # Pass evaluation details as dict
                         }
 
 
@@ -1707,11 +1710,14 @@ def run_test_from_ui(
 
             # Iterate through the generator yielded by run_test
             final_results = None
-            last_image_path = None # Variable to store the last image path
-            # Initialize variables for individual latencies
+            last_image_path = None
             last_champ_latency = ""
             last_chall_latency = ""
             last_judge_latency = ""
+            last_winner = ""
+            running_eval_results = [] # List to store results incrementally
+            current_summary = "" # Placeholder for summary updates
+            current_details_df = pd.DataFrame() # Placeholder for details updates
             for result_update in tester.run_test(
                 test_cases,
                 batch_size=batch_size,
@@ -1726,16 +1732,45 @@ def run_test_from_ui(
                     break
 
                 if result_update.get("type") == "update":
-                    # Yield intermediate update for image and runtime
-                    # Order: summary, details, image, runtime
-                    # Extract individual latencies from the new dictionary structure
+                    # Extract monitoring values
                     last_image_path = result_update.get("image_path")
                     last_champ_latency = str(result_update.get("champ_latency", ""))
                     last_chall_latency = str(result_update.get("chall_latency", ""))
                     last_judge_latency = str(result_update.get("judge_latency", ""))
-                    # Yield update for the 6 output components in the correct order
-                    # Order: summary, details, image, champ_lat, chall_lat, judge_lat
-                    yield None, None, last_image_path, last_champ_latency, last_chall_latency, last_judge_latency
+
+                    # Process evaluation details for incremental updates
+                    evaluation = result_update.get("evaluation") # Get the full evaluation dict
+                    if evaluation:
+                        running_eval_results.append(evaluation) # Add current result to list
+                        last_winner = str(evaluation.get("winner", "N/A"))
+                        # Format summary for the current case
+                        current_summary = (
+                            f"--- Last Processed Case ---\n"
+                            f"Case ID: {evaluation.get('test_id', 'N/A')}\n"
+                            f"Winner: {last_winner}\n"
+                            f"Confidence: {evaluation.get('confidence', 0.0):.2f}\n"
+                            f"Reasoning Snippet: {evaluation.get('reasoning', '')[:200]}..."
+                        )
+                        # Update DataFrame with all results so far
+                        try:
+                            # Use display_columns defined later, ensure it's available or redefine here if needed
+                            display_columns_update = ['test_id', 'winner', 'confidence', 'champion_output', 'challenger_output', 'reasoning']
+                            current_details_df = pd.DataFrame(running_eval_results)
+                            for col in display_columns_update:
+                                if col not in current_details_df.columns:
+                                    current_details_df[col] = None
+                            current_details_df = current_details_df[display_columns_update] # Reorder/select columns
+                        except Exception as df_err:
+                             logger.error(f"Error creating incremental DataFrame: {df_err}")
+                             current_details_df = pd.DataFrame([{"Error": "Failed to update details"}])
+                    else:
+                        # Handle case where evaluation data might be missing unexpectedly
+                        last_winner = "Update Error"
+                        current_summary = "Error: No evaluation data in update."
+                        # Keep previous details_df or show error? Let's keep previous for now.
+
+                    # Yield 8 values: current summary, current details df, 5 monitoring values, None (state)
+                    yield None, None, last_image_path, last_champ_latency, last_chall_latency, last_judge_latency, last_winner, None # Only update monitoring components intermediately
                 elif result_update.get("type") == "final":
                     # Store final results and break loop (should be the last yield)
                     final_results = result_update
@@ -1751,7 +1786,9 @@ def run_test_from_ui(
                  stopped_summary = "Test run stopped by user."
                  # Yield the stopped summary, but retain the last known image/runtime
                  # Yield stopped summary with the last known individual latencies
-                 yield stopped_summary, None, last_image_path, last_champ_latency, last_chall_latency, last_judge_latency
+                 # Yield stopped summary to winner box, empty list to state, keep last image/lats
+                 # Yield 8 values: stopped_summary message, last details df, 5 monitoring values, None (state)
+                 yield stopped_summary, current_details_df, last_image_path, last_champ_latency, last_chall_latency, last_judge_latency, last_winner, None
                  return # Exit the function
 
             if final_results is None:
@@ -1761,7 +1798,7 @@ def run_test_from_ui(
             progress(0.9, desc="Formatting final results...")
             # 6. Format Final Results
             summary_data = final_results.get("summary", {})
-            raw_evals = final_results.get("evaluations", [])
+            raw_evals = final_results.get("evaluations", []) # This list is needed for download state
             summary_output = format_summary_output(summary_data)
             display_columns = ['test_id', 'winner', 'confidence', 'champion_output', 'challenger_output', 'reasoning']
 
@@ -1787,9 +1824,9 @@ def run_test_from_ui(
             logger.info("Test run completed successfully.")
             # Yield the final formatted results
             # Order: summary, details, image, runtime (image/runtime are None here)
-            # Yield final summary/details along with the *last* image/runtime displayed
-            # Yield final results with the last known individual latencies
-            yield summary_output, details_df, last_image_path, last_champ_latency, last_chall_latency, last_judge_latency
+            # Yield final results: last winner, full raw_evals list for state, last image/lats
+            # Yield 8 values: final overall summary, final details df, last 5 monitoring values, final raw_evals for state
+            yield summary_output, details_df, last_image_path, last_champ_latency, last_chall_latency, last_judge_latency, last_winner, raw_evals
 
         except Exception as e:
             logger.exception("An error occurred during the test execution loop in run_test_from_ui.")
@@ -1797,29 +1834,39 @@ def run_test_from_ui(
             error_message = f"Test Execution Error: {e}"
             error_df = pd.DataFrame([{"Error": error_message}])
             # Ensure error yields also provide 6 values (None for latencies)
-            yield error_message, error_df, None, None, None, None
+            # Yield error message to winner box, empty list to state
+            # Yield 8 values: error message, error df, None x 5 (monitoring), None (state)
+            yield error_message, error_df, None, None, None, None, None, None
 
     except gr.Error as e: # Catch Gradio-specific errors to display them directly
         logger.error(f"Gradio Error: {e}")
         error_message = str(e)
         error_df = pd.DataFrame([{"Error": error_message}])
-        yield error_message, error_df, None, None, None, None
+        # Yield error message to winner box, empty list to state
+        # Yield 8 values: error message, error df, None x 5 (monitoring), None (state)
+        yield error_message, error_df, None, None, None, None, None, None
     except Exception as e:
         logger.exception("An unexpected error occurred in run_test_from_ui setup.")
         error_message = f"An unexpected setup error occurred: {e}"
         error_df = pd.DataFrame([{"Error": error_message}])
-        yield error_message, error_df, None, None, None, None
+        # Yield error message to winner box, empty list to state
+        # Yield 8 values: error message, error df, None x 5 (monitoring), None (state)
+        yield error_message, error_df, None, None, None, None, None, None
 
     except gr.Error as e: # Catch Gradio-specific errors to display them directly
         logger.error(f"Gradio Error: {e}")
         error_message = str(e)
         error_df = pd.DataFrame([{"Error": error_message}])
-        yield error_message, error_df, None, None, None, None
+        # Yield error message to winner box, empty list to state
+        # Yield 8 values: error message, error df, None x 5 (monitoring), None (state)
+        yield error_message, error_df, None, None, None, None, None, None
     except Exception as e:
         logger.exception("An unexpected setup error occurred in run_test_from_ui setup.")
         error_message = f"An unexpected setup error occurred: {e}"
         error_df = pd.DataFrame([{"Error": error_message}])
-        yield error_message, error_df, None, None, None, None
+        # Yield error message to winner box, empty list to state
+        # Yield 8 values: error message, error df, None x 5 (monitoring), None (state)
+        yield error_message, error_df, None, None, None, None, None, None
     finally:
         # Ensure the stop requested flag is reset regardless of how the function exits
         # Although it's reset at the start, this is an extra safety measure.
@@ -1827,6 +1874,59 @@ def run_test_from_ui(
 # Removed the duplicated except blocks that were incorrectly indented
 
 # Function to be called by the Stop button
+# --- Helper Function for Downloads ---
+
+# Function to generate JSONL file for download
+def generate_jsonl_download(results_list: List[Dict[str, Any]]) -> gr.File:
+    """
+    Takes a list of evaluation result dictionaries, saves them as a JSONL file,
+    and returns a Gradio File object for download.
+    """
+    if not results_list:
+        logger.warning("generate_jsonl_download called with empty results list.")
+        results_list = []
+
+    try:
+        jsonl_content = io.StringIO()
+        for result in results_list:
+            # The results passed should already be dicts from ModelTester.run_test final yield
+            if isinstance(result, dict):
+                 serializable_result = result
+            # If results are EvaluationResult objects (e.g., if passed directly), convert them
+            elif hasattr(result, 'test_id') and hasattr(result, 'winner'):
+                 serializable_result = {
+                     "test_id": result.test_id,
+                     "champion_output": result.champion_output,
+                     "challenger_output": result.challenger_output,
+                     "winner": result.winner,
+                     "confidence": result.confidence,
+                     "reasoning": result.reasoning,
+                 }
+            else:
+                 logger.warning(f"Skipping non-dict/non-EvaluationResult item in results: {type(result)}")
+                 continue
+            jsonl_content.write(json.dumps(serializable_result) + '\n')
+
+        jsonl_string = jsonl_content.getvalue()
+        jsonl_content.close()
+
+        timestamp = time.strftime("%Y%m%d-%H%M%S")
+        temp_dir = tempfile.gettempdir()
+        file_path = os.path.join(temp_dir, f"abx_results_{timestamp}.jsonl")
+
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(jsonl_string)
+
+        logger.info(f"Generated JSONL file for download at: {file_path}")
+        # Note: Gradio handles the cleanup of the temp file after download
+        return gr.File(value=file_path, label="Download Results (JSONL)")
+
+    except Exception as e:
+        logger.error(f"Error generating JSONL file: {e}", exc_info=True)
+        raise gr.Error(f"Failed to generate JSONL download: {e}")
+
+
+# --- Stop Request Handling ---
 def request_stop():
     global STOP_REQUESTED
     if not STOP_REQUESTED:
@@ -1842,8 +1942,63 @@ def request_stop():
         logger.warning("Stop already requested.")
         try:
             gr.Info("Stop already requested. Please wait...")
-        except AttributeError:
-             print("UI: Stop already requested. Please wait...")
+        except AttributeError: # Add missing except block
+            print("UI: Stop already requested. Please wait...") # Move print here
+# Function to generate JSONL file for download
+def generate_jsonl_download(results_list: List[Dict[str, Any]]) -> gr.File:
+    """
+    Takes a list of evaluation result dictionaries, saves them as a JSONL file,
+    and returns a Gradio File object for download.
+    """
+    if not results_list:
+        # Return an empty file or raise an error if there are no results?
+        # For now, let's create an empty file to avoid errors.
+        logger.warning("generate_jsonl_download called with empty results list.")
+        results_list = [] # Ensure it's an empty list
+
+    try:
+        # Use io.StringIO to build the JSONL string in memory
+        jsonl_content = io.StringIO()
+        for result in results_list:
+            # Ensure result is serializable (convert dataclasses if needed)
+            # The results passed should already be dicts from ModelTester.run_test final yield
+            if isinstance(result, dict):
+                 serializable_result = result
+            else:
+                 # Handle unexpected types if necessary
+                 logger.warning(f"Skipping non-dict item in results: {type(result)}")
+                 continue
+            jsonl_content.write(json.dumps(serializable_result) + '\n')
+
+        # Get the string content
+        jsonl_string = jsonl_content.getvalue()
+        jsonl_content.close()
+
+        # Create a temporary file path
+        timestamp = time.strftime("%Y%m%d-%H%M%S")
+        temp_dir = tempfile.gettempdir()
+        file_path = os.path.join(temp_dir, f"abx_results_{timestamp}.jsonl")
+
+        # Write the string content to the file
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(jsonl_string)
+
+        logger.info(f"Generated JSONL file for download at: {file_path}")
+        # Return the file path wrapped in gr.File for download
+        # Note: Gradio handles the cleanup of the temp file after download
+        return gr.File(value=file_path, label="Download Results (JSONL)")
+
+    except Exception as e:
+        logger.error(f"Error generating JSONL file: {e}", exc_info=True)
+        # How to signal error to user? Gradio download button doesn't easily show errors.
+        # Maybe return None or raise an error that Gradio might catch?
+        # Returning None might just make the download fail silently.
+        # Let's re-raise for now, Gradio might handle it.
+        raise gr.Error(f"Failed to generate JSONL download: {e}")
+
+
+# --- UI Creation ---
+# Removed incorrectly indented line
 
 
 def create_ui():
@@ -2012,45 +2167,118 @@ def create_ui():
                              last_chall_latency_display = gr.Textbox(label="Challenger Latency (s)", value="", interactive=False)
                              last_judge_latency_display = gr.Textbox(label="Judge Latency (s)", value="", interactive=False)
 
-                    with gr.Column(scale=2): # Column for existing summary and details
+                    with gr.Column(scale=2): # Column for winner and download
                         with gr.Group(elem_classes="results-box"):
-                             gr.Markdown("#### Summary")
-                             summary_output = gr.Textbox(label="Overall Results", lines=15, show_copy_button=True, interactive=False)
+                             gr.Markdown("#### Last Winner")
+                             # Textbox to show the last winner
+                             last_winner_output = gr.Textbox(label="Last Test Case Winner", lines=2, show_copy_button=True, interactive=False)
                         with gr.Group(elem_classes="results-box"):
-                             gr.Markdown("#### Detailed Evaluations")
-                             details_output = gr.DataFrame(label="Individual Case Results", wrap=True, interactive=False) # Use DataFrame for better display
+                             gr.Markdown("#### Download Results")
+                             # State to hold the raw evaluation results (list of dicts) for download
+                             results_state = gr.State([])
+                             # Download Button
+                             download_button = gr.DownloadButton(label="Download All Evaluations (JSONL)", value=None) # This button is triggered later
+
+                # Add placeholders for final summary and details display
+                with gr.Group(elem_classes="results-box"):
+                    gr.Markdown("#### Overall Results")
+                    summary_output = gr.Textbox(label="Summary", lines=10, interactive=False)
+                with gr.Group(elem_classes="results-box"):
+                    gr.Markdown("#### Detailed Evaluations")
+                    detailed_evaluations_output = gr.DataFrame(label="Individual Case Results", interactive=False)
         # Define interactions
-        run_button.click(
+        # Define the primary run event
+        run_event = run_button.click(
             fn=run_test_from_ui,
             inputs=[
-                # Model Configs
+                # Model Configs (15)
                 champ_name, champ_api_url, champ_model_id, champ_temp, champ_max_tokens,
                 chall_name, chall_api_url, chall_model_id, chall_temp, chall_max_tokens,
                 judge_name, judge_api_url, judge_model_id, judge_temp, judge_max_tokens,
-                # API Key
+                # API Key (1)
                 api_key_input,
-                # Prompts
+                # Prompts (2)
                 model_prompt_template_input,
                 judge_prompt_template_input,
-                # Test Data
+                # Test Data (2)
                 test_data_file,
                 test_data_text,
-                # Parameters
+                # Parameters (5)
                 batch_size_input,
                 batch_retry_attempts_input,
                 batch_backoff_factor_input,
                 batch_max_wait_input,
                 batch_retry_trigger_strings_input,
-                # Data Field Names
+                # Data Field Names (3)
                 key_field_name_input,
                 value_field_name_input,
-                image_field_name_input # Pass image field name
+                image_field_name_input
             ],
-            # Update outputs to include the three new latency fields instead of the old one
             outputs=[
-                summary_output, details_output, last_image_display,
-                last_champ_latency_display, last_chall_latency_display, last_judge_latency_display
+                # Map the 7 yielded values from run_test_from_ui correctly
+                summary_output,              # 1. Final summary text
+                detailed_evaluations_output, # 2. Final details dataframe
+                last_image_display,          # 3. Intermediate image path
+                last_champ_latency_display,  # 4. Intermediate champ latency
+                last_chall_latency_display,  # 5. Intermediate chall latency
+                last_judge_latency_display,  # 6. Intermediate judge latency
+                last_winner_output           # 7. Intermediate winner text
+                # Note: The 8th output (results_state) is added below
             ]
+            # Removed the incorrect/duplicated download logic from here
+        )
+
+        # Connect stop button to cancel the run event
+        stop_button.click(fn=request_stop, inputs=None, outputs=None, cancels=[run_event])
+
+        # Connect download button generation logic
+        # This needs to be triggered *after* the run completes and populates the final results.
+        # A gr.State() component is needed to store the final evaluation list.
+
+        # Define the state here, outside the click handler definition
+        results_state = gr.State([])
+
+        # --- Re-defining run_event to include state output ---
+        # We need to redefine the click event to include results_state in the outputs
+        # This replaces the previous run_event definition.
+        run_event = run_button.click(
+            fn=run_test_from_ui,
+            inputs=[ # Same inputs as before (list omitted for brevity)
+                champ_name, champ_api_url, champ_model_id, champ_temp, champ_max_tokens,
+                chall_name, chall_api_url, chall_model_id, chall_temp, chall_max_tokens,
+                judge_name, judge_api_url, judge_model_id, judge_temp, judge_max_tokens,
+                api_key_input,
+                model_prompt_template_input,
+                judge_prompt_template_input,
+                test_data_file,
+                test_data_text,
+                batch_size_input,
+                batch_retry_attempts_input,
+                batch_backoff_factor_input,
+                batch_max_wait_input,
+                batch_retry_trigger_strings_input,
+                key_field_name_input,
+                value_field_name_input,
+                image_field_name_input
+            ],
+            outputs=[
+                # Map the 7 yielded values + the state (8 outputs total)
+                summary_output,              # 1. Final summary text
+                detailed_evaluations_output, # 2. Final details dataframe
+                last_image_display,          # 3. Intermediate image path
+                last_champ_latency_display,  # 4. Intermediate champ latency
+                last_chall_latency_display,  # 5. Intermediate chall latency
+                last_judge_latency_display,  # 6. Intermediate judge latency
+                last_winner_output,          # 7. Intermediate winner text
+                results_state                # 8. Hidden state for final raw evaluations
+            ]
+        )
+
+        # Now, trigger the download file generation *after* the run completes, using the state
+        run_event.then(
+             fn=generate_jsonl_download,
+             inputs=[results_state],
+             outputs=[download_button] # Output the gr.File object to the button itself
         )
 
         # Wire the stop button
