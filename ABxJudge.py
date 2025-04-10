@@ -2013,7 +2013,6 @@ def create_ui():
         gr.Markdown(
             """**Multimodal Input**: To use image inputs:
             1. Ensure your test data (CSV/JSON/JSONL) includes a column/field containing the **local path** or **public URL** to the image.
-        logger.info(f"--- generate_jsonl_download returning file: {file_path}")
             2. Specify this column/field name in the 'Image Field Name' box below.
             3. Ensure your models and endpoints support multimodal input (e.g., GPT-4o, Claude 3, LLaVA via Ollama).
             4. The model prompt should instruct the model on what to do with the image (e.g., 'Describe this image.', 'What text is in the image provided?').""",
