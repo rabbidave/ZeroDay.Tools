@@ -1876,54 +1876,6 @@ def run_test_from_ui(
 # Function to be called by the Stop button
 # --- Helper Function for Downloads ---
 
-# Function to generate JSONL file for download
-def generate_jsonl_download(results_list: List[Dict[str, Any]]) -> gr.File:
-    """
-    Takes a list of evaluation result dictionaries, saves them as a JSONL file,
-    and returns a Gradio File object for download.
-    """
-    if not results_list:
-        logger.warning("generate_jsonl_download called with empty results list.")
-        results_list = []
-
-    try:
-        jsonl_content = io.StringIO()
-        for result in results_list:
-            # The results passed should already be dicts from ModelTester.run_test final yield
-            if isinstance(result, dict):
-                 serializable_result = result
-            # If results are EvaluationResult objects (e.g., if passed directly), convert them
-            elif hasattr(result, 'test_id') and hasattr(result, 'winner'):
-                 serializable_result = {
-                     "test_id": result.test_id,
-                     "champion_output": result.champion_output,
-                     "challenger_output": result.challenger_output,
-                     "winner": result.winner,
-                     "confidence": result.confidence,
-                     "reasoning": result.reasoning,
-                 }
-            else:
-                 logger.warning(f"Skipping non-dict/non-EvaluationResult item in results: {type(result)}")
-                 continue
-            jsonl_content.write(json.dumps(serializable_result) + '\n')
-
-        jsonl_string = jsonl_content.getvalue()
-        jsonl_content.close()
-
-        timestamp = time.strftime("%Y%m%d-%H%M%S")
-        temp_dir = tempfile.gettempdir()
-        file_path = os.path.join(temp_dir, f"abx_results_{timestamp}.jsonl")
-
-        with open(file_path, "w", encoding="utf-8") as f:
-            f.write(jsonl_string)
-
-        logger.info(f"Generated JSONL file for download at: {file_path}")
-        # Note: Gradio handles the cleanup of the temp file after download
-        return gr.File(value=file_path, label="Download Results (JSONL)")
-
-    except Exception as e:
-        logger.error(f"Error generating JSONL file: {e}", exc_info=True)
-        raise gr.Error(f"Failed to generate JSONL download: {e}")
 
 
 # --- Stop Request Handling ---
@@ -1998,6 +1950,7 @@ def generate_jsonl_download(results_list: List[Dict[str, Any]]) -> gr.File:
 
 
 # --- UI Creation ---
+    logger.info(f"--- generate_jsonl_download called. Received {len(results_list) if results_list else 'None'} results.")
 # Removed incorrectly indented line
 
 
@@ -2034,6 +1987,7 @@ def create_ui():
         gr.Markdown(
             """**Multimodal Input**: To use image inputs:
             1. Ensure your test data (CSV/JSON/JSONL) includes a column/field containing the **local path** or **public URL** to the image.
+        logger.info(f"--- generate_jsonl_download returning file: {file_path}")
             2. Specify this column/field name in the 'Image Field Name' box below.
             3. Ensure your models and endpoints support multimodal input (e.g., GPT-4o, Claude 3, LLaVA via Ollama).
             4. The model prompt should instruct the model on what to do with the image (e.g., 'Describe this image.', 'What text is in the image provided?').""",
