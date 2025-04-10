@@ -1138,6 +1138,17 @@ class ModelTester:
                          current_attempt_chall_responses[case_id] = ModelResponse(case_id, self.challenger_endpoint.name, f"Error: Generation failed critically - {e}", 0)
                          challenger_metrics["error_count"] += 1
 
+                # --- Yield intermediate update ---
+                # Check if the test case actually had an image associated
+                image_to_display = test_case.image_path_or_url if test_case.image_path_or_url else None # Use None if no image
+                # Calculate combined latency (handle potential errors where response might be missing)
+                champ_resp = current_attempt_champ_responses.get(case_id)
+                chall_resp = current_attempt_chall_responses.get(case_id)
+                champ_lat = champ_resp.latency if champ_resp else 0
+                chall_lat = chall_resp.latency if chall_resp else 0
+                combined_latency = round(champ_lat + chall_lat, 3)
+
+                # Removed the intermediate yield from here. It will be moved inside the evaluation loop below.
                 # 2. Evaluate with LM Judge for the current batch attempt
                 if progress is not None:
                     progress((processed_case_count + len(current_batch) * 0.5) / num_cases, f"Evaluating Batch {batch_num}")
@@ -1194,6 +1205,21 @@ class ModelTester:
                         judge_metrics["total_latency"] += judge_latency
                         judge_metrics["total_output_chars"] += len(evaluation_result.reasoning) # Judge output length
                         current_attempt_eval_results.append(evaluation_result)
+                        # --- Yield intermediate update AFTER judge evaluation for this case ---
+                        image_to_display = test_case.image_path_or_url if test_case.image_path_or_url else None
+                        champ_lat = round(champ_response.latency, 3) if champ_response else 0.0
+                        chall_lat = round(chall_response.latency, 3) if chall_response else 0.0
+                        # Use the latency calculated just before (judge_latency variable)
+                        judge_lat = round(judge_latency, 3)
+
+                        yield {
+                            "type": "update",
+                            "image_path": image_to_display,
+                            "champ_latency": champ_lat,
+                            "chall_latency": chall_lat,
+                            "judge_latency": judge_lat
+                        }
+
 
                         # Check for trigger strings in judge reasoning if retry is configured
                         if batch_retry_attempts > 0 and batch_retry_trigger_strings and not has_trigger_string_in_attempt:
@@ -1351,8 +1377,9 @@ class ModelTester:
                 "judge_name": self.judge_endpoint.name,
             }
 
-        return {
-            # Keep raw evaluations separate from summary
+        # Yield the final results dictionary
+        yield {
+            "type": "final",
             "evaluations": aggregated_summary["raw_evaluations"],
             "summary": final_summary
         }
@@ -1678,7 +1705,14 @@ def run_test_from_ui(
             # Make trigger strings case-insensitive in the run_test method check
             # (Already done in list comprehension above)
 
-            results = tester.run_test(
+            # Iterate through the generator yielded by run_test
+            final_results = None
+            last_image_path = None # Variable to store the last image path
+            # Initialize variables for individual latencies
+            last_champ_latency = ""
+            last_chall_latency = ""
+            last_judge_latency = ""
+            for result_update in tester.run_test(
                 test_cases,
                 batch_size=batch_size,
                 progress=progress,
@@ -1686,59 +1720,111 @@ def run_test_from_ui(
                 batch_backoff_factor=batch_backoff_factor,
                 batch_max_wait=batch_max_wait,
                 batch_retry_trigger_strings=batch_retry_trigger_strings
-            )
+            ):
+                if STOP_REQUESTED: # Check stop flag during iteration
+                    logger.info("Stop requested, halting UI updates.")
+                    break
+
+                if result_update.get("type") == "update":
+                    # Yield intermediate update for image and runtime
+                    # Order: summary, details, image, runtime
+                    # Extract individual latencies from the new dictionary structure
+                    last_image_path = result_update.get("image_path")
+                    last_champ_latency = str(result_update.get("champ_latency", ""))
+                    last_chall_latency = str(result_update.get("chall_latency", ""))
+                    last_judge_latency = str(result_update.get("judge_latency", ""))
+                    # Yield update for the 6 output components in the correct order
+                    # Order: summary, details, image, champ_lat, chall_lat, judge_lat
+                    yield None, None, last_image_path, last_champ_latency, last_chall_latency, last_judge_latency
+                elif result_update.get("type") == "final":
+                    # Store final results and break loop (should be the last yield)
+                    final_results = result_update
+                    break
+                else:
+                    logger.warning(f"Received unexpected update type from run_test: {result_update.get('type')}")
+
+            # Check if the loop finished because of stop request or completion
+            if STOP_REQUESTED:
+                 logger.info("Test run stopped by user.")
+                 # Yield a message indicating stop? Or just let the last state remain?
+                 # Let's yield a final status update to the summary.
+                 stopped_summary = "Test run stopped by user."
+                 # Yield the stopped summary, but retain the last known image/runtime
+                 # Yield stopped summary with the last known individual latencies
+                 yield stopped_summary, None, last_image_path, last_champ_latency, last_chall_latency, last_judge_latency
+                 return # Exit the function
+
+            if final_results is None:
+                 logger.error("Test run finished but no final results were yielded.")
+                 raise gr.Error("Test Execution Error: Did not receive final results.")
+
+            progress(0.9, desc="Formatting final results...")
+            # 6. Format Final Results
+            summary_data = final_results.get("summary", {})
+            raw_evals = final_results.get("evaluations", [])
+            summary_output = format_summary_output(summary_data)
+            display_columns = ['test_id', 'winner', 'confidence', 'champion_output', 'challenger_output', 'reasoning']
+
+            try:
+                if raw_evals:
+                    details_df = pd.DataFrame(raw_evals)
+                    if not details_df.empty:
+                        for col in display_columns:
+                            if col not in details_df.columns:
+                                details_df[col] = None
+                        details_df = details_df[display_columns]
+                    else:
+                        details_df = pd.DataFrame(columns=display_columns)
+                else:
+                    details_df = pd.DataFrame(columns=display_columns)
+                    summary_output += "\n\nNote: No evaluation results were generated."
+
+            except Exception as df_err:
+                logger.error(f"Error creating or processing DataFrame from final results: {df_err}")
+                summary_output += f"\n\nError displaying detailed results: {df_err}"
+                details_df = pd.DataFrame(columns=display_columns)
+
+            logger.info("Test run completed successfully.")
+            # Yield the final formatted results
+            # Order: summary, details, image, runtime (image/runtime are None here)
+            # Yield final summary/details along with the *last* image/runtime displayed
+            # Yield final results with the last known individual latencies
+            yield summary_output, details_df, last_image_path, last_champ_latency, last_chall_latency, last_judge_latency
+
         except Exception as e:
-            logger.exception("An error occurred during ModelTester.run_test()")
-            raise gr.Error(f"Test Execution Error: {e}")
-
-        progress(0.9, desc="Formatting results...")
-        # 6. Format Results
-        summary_output = format_summary_output(results.get("summary", {}))
-        # Convert raw evaluations (list of dicts) to DataFrame
-        raw_evals = results.get("evaluations", [])
-        display_columns = ['test_id', 'winner', 'confidence', 'champion_output', 'challenger_output', 'reasoning']
-
-        try:
-            if raw_evals:
-                 details_df = pd.DataFrame(raw_evals)
-                 # Check if DataFrame is empty (can happen if raw_evals contains only empty dicts, though unlikely)
-                 if not details_df.empty:
-                     # Ensure all expected columns exist, add if missing
-                     for col in display_columns:
-                          if col not in details_df.columns:
-                               details_df[col] = None # Add column with None if missing
-                     details_df = details_df[display_columns] # Reorder/select
-                 else:
-                      # If DataFrame created from non-empty raw_evals is still empty
-                      details_df = pd.DataFrame(columns=display_columns)
-            else:
-                 # Handle case where raw_evals list itself is empty
-                 details_df = pd.DataFrame(columns=display_columns) # Empty DF with headers
-                 summary_output += "\n\nNote: No evaluation results were generated."
-
-        except Exception as df_err:
-            logger.error(f"Error creating or processing DataFrame from results: {df_err}")
-            summary_output += f"\n\nError displaying detailed results: {df_err}"
-            details_df = pd.DataFrame(columns=display_columns) # Empty DF on error
-        else:
-             # Handle case where no evaluations were produced (e.g., all failed/skipped)
-             details_df = pd.DataFrame(columns=display_columns) # Empty DF with headers
-             summary_output += "\n\nNote: No evaluation results were generated."
-
-
-        logger.info("Test run completed successfully.")
-        return summary_output, details_df
+            logger.exception("An error occurred during the test execution loop in run_test_from_ui.")
+            # Yield error message to UI components
+            error_message = f"Test Execution Error: {e}"
+            error_df = pd.DataFrame([{"Error": error_message}])
+            # Ensure error yields also provide 6 values (None for latencies)
+            yield error_message, error_df, None, None, None, None
 
     except gr.Error as e: # Catch Gradio-specific errors to display them directly
         logger.error(f"Gradio Error: {e}")
-        # Return error message to both outputs
-        error_df = pd.DataFrame([{"Error": str(e)}])
-        return str(e), error_df
-    except Exception as e:
-        logger.exception("An unexpected error occurred in run_test_from_ui.")
-        error_message = f"An unexpected error occurred: {e}"
+        error_message = str(e)
         error_df = pd.DataFrame([{"Error": error_message}])
-        return error_message, error_df
+        yield error_message, error_df, None, None, None, None
+    except Exception as e:
+        logger.exception("An unexpected error occurred in run_test_from_ui setup.")
+        error_message = f"An unexpected setup error occurred: {e}"
+        error_df = pd.DataFrame([{"Error": error_message}])
+        yield error_message, error_df, None, None, None, None
+
+    except gr.Error as e: # Catch Gradio-specific errors to display them directly
+        logger.error(f"Gradio Error: {e}")
+        error_message = str(e)
+        error_df = pd.DataFrame([{"Error": error_message}])
+        yield error_message, error_df, None, None, None, None
+    except Exception as e:
+        logger.exception("An unexpected setup error occurred in run_test_from_ui setup.")
+        error_message = f"An unexpected setup error occurred: {e}"
+        error_df = pd.DataFrame([{"Error": error_message}])
+        yield error_message, error_df, None, None, None, None
+    finally:
+        # Ensure the stop requested flag is reset regardless of how the function exits
+        # Although it's reset at the start, this is an extra safety measure.
+        STOP_REQUESTED = False
+# Removed the duplicated except blocks that were incorrectly indented
 
 # Function to be called by the Stop button
 def request_stop():
@@ -1914,13 +2000,25 @@ def create_ui():
                 with gr.Row():
                     run_button = gr.Button("Run A/B Test", variant="primary", scale=4)
                     stop_button = gr.Button("Stop Test", variant="stop", scale=1) # Add stop button
-                with gr.Group(elem_classes="results-box"):
-                     gr.Markdown("#### Summary")
-                     summary_output = gr.Textbox(label="Overall Results", lines=15, show_copy_button=True, interactive=False)
-                with gr.Group(elem_classes="results-box"):
-                     gr.Markdown("#### Detailed Evaluations")
-                     details_output = gr.DataFrame(label="Individual Case Results", wrap=True, interactive=False) # Use DataFrame for better display
+                with gr.Row(): # New row for results display
+                    with gr.Column(scale=1): # Column for the new status window
+                        with gr.Group(elem_classes="results-box"):
+                             gr.Markdown("#### Last Processed")
+                             # Placeholder for the most recent image
+                             last_image_display = gr.Image(label="Last Image", type="filepath", interactive=False, height=200, value=None, show_label=True) # Explicitly show label, ensure preview area renders
+                             # Placeholder for the runtime of the last image
+                             # Replace single runtime display with three separate ones
+                             last_champ_latency_display = gr.Textbox(label="Champion Latency (s)", value="", interactive=False)
+                             last_chall_latency_display = gr.Textbox(label="Challenger Latency (s)", value="", interactive=False)
+                             last_judge_latency_display = gr.Textbox(label="Judge Latency (s)", value="", interactive=False)
 
+                    with gr.Column(scale=2): # Column for existing summary and details
+                        with gr.Group(elem_classes="results-box"):
+                             gr.Markdown("#### Summary")
+                             summary_output = gr.Textbox(label="Overall Results", lines=15, show_copy_button=True, interactive=False)
+                        with gr.Group(elem_classes="results-box"):
+                             gr.Markdown("#### Detailed Evaluations")
+                             details_output = gr.DataFrame(label="Individual Case Results", wrap=True, interactive=False) # Use DataFrame for better display
         # Define interactions
         run_button.click(
             fn=run_test_from_ui,
@@ -1948,7 +2046,11 @@ def create_ui():
                 value_field_name_input,
                 image_field_name_input # Pass image field name
             ],
-            outputs=[summary_output, details_output]
+            # Update outputs to include the three new latency fields instead of the old one
+            outputs=[
+                summary_output, details_output, last_image_display,
+                last_champ_latency_display, last_chall_latency_display, last_judge_latency_display
+            ]
         )
 
         # Wire the stop button
