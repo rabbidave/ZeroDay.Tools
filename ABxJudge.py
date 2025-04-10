@@ -1770,7 +1770,7 @@ def run_test_from_ui(
                         # Keep previous details_df or show error? Let's keep previous for now.
 
                     # Yield 8 values: current summary, current details df, 5 monitoring values, None (state)
-                    yield None, None, last_image_path, last_champ_latency, last_chall_latency, last_judge_latency, last_winner, None # Only update monitoring components intermediately
+                    yield current_summary, current_details_df, last_image_path, last_champ_latency, last_chall_latency, last_judge_latency, last_winner, None # Update summary/details incrementally
                 elif result_update.get("type") == "final":
                     # Store final results and break loop (should be the last yield)
                     final_results = result_update
