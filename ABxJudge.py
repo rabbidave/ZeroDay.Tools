@@ -1788,7 +1788,7 @@ def run_test_from_ui(
                  # Yield stopped summary with the last known individual latencies
                  # Yield stopped summary to winner box, empty list to state, keep last image/lats
                  # Yield 8 values: stopped_summary message, last details df, 5 monitoring values, None (state)
-                 yield stopped_summary, current_details_df, last_image_path, last_champ_latency, last_chall_latency, last_judge_latency, last_winner, None
+                 yield stopped_summary, current_details_df, last_image_path, last_champ_latency, last_chall_latency, last_judge_latency, last_winner, running_eval_results # Yield partial results to state
                  return # Exit the function
 
             if final_results is None:
@@ -1880,22 +1880,17 @@ def run_test_from_ui(
 
 # --- Stop Request Handling ---
 def request_stop():
+    """Sets the global STOP_REQUESTED flag and returns a status message."""
     global STOP_REQUESTED
+    status_message = ""
     if not STOP_REQUESTED:
         STOP_REQUESTED = True
         logger.warning("Stop requested via UI button.")
-        # Use gr.Info for user feedback if Gradio version supports it well
-        try:
-            gr.Info("Stop request received. Finishing current batch...")
-        except AttributeError: # Fallback for older Gradio versions
-            print("UI: Stop request received. Finishing current batch...")
-
+        status_message = "Stop request received. Finishing current batch..."
     else:
         logger.warning("Stop already requested.")
-        try:
-            gr.Info("Stop already requested. Please wait...")
-        except AttributeError: # Add missing except block
-            print("UI: Stop already requested. Please wait...") # Move print here
+        status_message = "Stop already requested. Please wait..."
+    return status_message
 # Function to generate JSONL file for download
 def generate_jsonl_download(results_list: List[Dict[str, Any]]) -> gr.File:
     """
@@ -1950,7 +1945,6 @@ def generate_jsonl_download(results_list: List[Dict[str, Any]]) -> gr.File:
 
 
 # --- UI Creation ---
-    logger.info(f"--- generate_jsonl_download called. Received {len(results_list) if results_list else 'None'} results.")
 # Removed incorrectly indented line
 
 
@@ -2108,7 +2102,8 @@ def create_ui():
                 gr.Markdown("### Test Execution & Results")
                 with gr.Row():
                     run_button = gr.Button("Run A/B Test", variant="primary", scale=4)
-                    stop_button = gr.Button("Stop Test", variant="stop", scale=1) # Add stop button
+                    stop_button = gr.Button("Stop Test", variant="stop", scale=1)
+                    stop_status_display = gr.Textbox(label="Stop Status", value="", interactive=False, scale=3) # Add status display
                 with gr.Row(): # New row for results display
                     with gr.Column(scale=1): # Column for the new status window
                         with gr.Group(elem_classes="results-box"):
@@ -2168,22 +2163,9 @@ def create_ui():
                 value_field_name_input,
                 image_field_name_input
             ],
-            outputs=[
-                # Map the 7 yielded values from run_test_from_ui correctly
-                summary_output,              # 1. Final summary text
-                detailed_evaluations_output, # 2. Final details dataframe
-                last_image_display,          # 3. Intermediate image path
-                last_champ_latency_display,  # 4. Intermediate champ latency
-                last_chall_latency_display,  # 5. Intermediate chall latency
-                last_judge_latency_display,  # 6. Intermediate judge latency
-                last_winner_output           # 7. Intermediate winner text
-                # Note: The 8th output (results_state) is added below
-            ]
-            # Removed the incorrect/duplicated download logic from here
         )
 
         # Connect stop button to cancel the run event
-        stop_button.click(fn=request_stop, inputs=None, outputs=None, cancels=[run_event])
 
         # Connect download button generation logic
         # This needs to be triggered *after* the run completes and populates the final results.
@@ -2225,7 +2207,8 @@ def create_ui():
                 last_judge_latency_display,  # 6. Intermediate judge latency
                 last_winner_output,          # 7. Intermediate winner text
                 results_state                # 8. Hidden state for final raw evaluations
-            ]
+            ],
+            # cancels=[run_event] # Remove self-cancellation
         )
 
         # Now, trigger the download file generation *after* the run completes, using the state
@@ -2233,10 +2216,17 @@ def create_ui():
              fn=generate_jsonl_download,
              inputs=[results_state],
              outputs=[download_button] # Output the gr.File object to the button itself
+       )
+
+        # --- Add Stop Button Interaction ---
+        # Connect the stop button to the request_stop function and make it cancel the run_event
+        stop_event = stop_button.click(
+            fn=request_stop,
+            inputs=None,      # request_stop takes no inputs from UI
+            outputs=[stop_status_display], # Output the status message
+            cancels=[run_event] # Make the stop button cancel the main test run
         )
 
-        # Wire the stop button
-        stop_button.click(fn=request_stop, inputs=None, outputs=None)
 
     return iface
 
