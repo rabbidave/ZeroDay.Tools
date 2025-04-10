@@ -2132,9 +2132,8 @@ def create_ui():
             with gr.TabItem("Monitoring"):
                 gr.Markdown("### Test Execution & Results")
                 with gr.Row():
-                    run_button = gr.Button("Run A/B Test", variant="primary", scale=4)
+                    run_button = gr.Button("Run A/B Test", variant="primary", scale=3) # Adjusted scale
                     stop_button = gr.Button("Stop Test", variant="stop", scale=1)
-                    stop_status_display = gr.Textbox(label="Stop Status", value="", interactive=False, scale=3) # Add status display
                 with gr.Row(): # New row for results display
                     with gr.Column(scale=1): # Column for the new status window
                         with gr.Group(elem_classes="results-box"):
@@ -2163,9 +2162,9 @@ def create_ui():
                 with gr.Group(elem_classes="results-box"):
                     gr.Markdown("#### Overall Results")
                     summary_output = gr.Textbox(label="Summary", lines=10, interactive=False)
-                with gr.Group(elem_classes="results-box"):
-                    gr.Markdown("#### Detailed Evaluations")
+                    # Moved Detailed Evaluations DataFrame here
                     detailed_evaluations_output = gr.DataFrame(label="Individual Case Results", interactive=False)
+                # Removed the separate "Detailed Evaluations" group
         # Define interactions & state
         results_state = gr.State([]) # Define state first
 
@@ -2216,7 +2215,7 @@ def create_ui():
         stop_event = stop_button.click(
             fn=request_stop,
             inputs=None,      # request_stop takes no inputs from UI
-            outputs=[stop_status_display], # request_stop returns status message
+            outputs=None,     # request_stop doesn't need to update UI directly anymore
             cancels=[run_event] # Make the stop button cancel the main test run
         )
 
