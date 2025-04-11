@@ -1241,17 +1241,6 @@ class ModelTester:
                         previous_update_payload = new_update_payload # Store for next iteration
                         # Yield the current update
                         yield new_update_payload
-
-                        yield {
-                            "type": "update",
-                            "image_path": image_to_display,
-                            "champ_latency": champ_lat,
-                            "chall_latency": chall_lat,
-                            "judge_latency": judge_lat,
-                            "evaluation": evaluation_result.__dict__ # Pass evaluation details as dict
-                        }
-
-
                         # Check for trigger strings in judge reasoning if retry is configured
                         if batch_retry_attempts > 0 and batch_retry_trigger_strings and not has_trigger_string_in_attempt:
                             for trigger in batch_retry_trigger_strings:
@@ -1796,7 +1785,7 @@ def run_test_from_ui(
                             current_summary = "Error: No evaluation data in update."
 
                         # Yield 8 values for incremental update
-                        yield current_summary, current_details_df, last_image_path, last_champ_latency, last_chall_latency, last_judge_latency, last_winner, None
+                        yield current_summary, current_details_df, last_image_path, last_champ_latency, last_chall_latency, last_judge_latency, last_winner, running_eval_results # Yield current results to state
                     elif result_update.get("type") == "final":
                         # Store final results
                         final_results = result_update
@@ -1866,7 +1855,7 @@ def run_test_from_ui(
                  raw_evals = raw_evals if 'raw_evals' in locals() else []
 
                  # Final yield statement - yields 8 values (conditionally None for raw_evals if stopped)
-                 yield summary_output, details_df, last_image_path, last_champ_latency, last_chall_latency, last_judge_latency, last_winner, (running_eval_results if STOP_REQUESTED else raw_evals)
+                 yield summary_output, details_df, last_image_path, last_champ_latency, last_chall_latency, last_judge_latency, last_winner, raw_evals
             # End of inner try...except...finally
         except Exception as test_exec_err: # Corresponds to try at line 1701
             logger.exception("An error occurred during the main test execution phase.")
@@ -1916,10 +1905,6 @@ def generate_jsonl_download(results_list: Optional[List[Dict[str, Any]]]) -> Opt
     Takes an optional list of evaluation result dictionaries, saves them as a JSONL file,
     and returns a Gradio File object for download. Returns None if input is None (e.g., run stopped).
     """
-    if results_list is None:
-        logger.info("generate_jsonl_download skipped because the test run was stopped.")
-        return None # Return None to disable/hide the download button
-
     if not results_list:
         # Still handle the case of a completed run with zero results
         logger.warning("generate_jsonl_download called with empty results list (run completed but no results).")
@@ -2166,7 +2151,6 @@ def create_ui():
                     detailed_evaluations_output = gr.DataFrame(label="Individual Case Results", interactive=False)
                 # Removed the separate "Detailed Evaluations" group
         # Define interactions & state
-        results_state = gr.State([]) # Define state first
 
         # Define the single, complete run event listener
         run_event = run_button.click(
