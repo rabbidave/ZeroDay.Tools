@@ -1825,7 +1825,6 @@ def run_test_from_ui(
                  else:
                       # Completed normally, process final results
                       logger.info("Test run completed normally.")
-                      if progress: progress(0.9, desc="Formatting final results...")
                       summary_data = final_results.get("summary", {})
                       raw_evals = final_results.get("evaluations", [])
                       summary_output = format_summary_output(summary_data)
@@ -1986,19 +1985,19 @@ def create_ui():
     with gr.Blocks(css=css, theme=gr.themes.Soft()) as iface:
         gr.Markdown("# Model A/B Testing & Evaluation Tool")
         gr.Markdown(
-            "Configure champion, challenger, and judge models, provide test data (including optional images), "
-            "and run evaluations to compare model performance."
+            "A) Configure Champion, Challenger, and Judge"
+            "B) Configure Input/Output & Test Parameters"
         )
         gr.Markdown(
-            """**API Key**: Optional. Enter if needed for cloud endpoints (OpenRouter, Anthropic, Gemini, etc.).
-            If blank, the tool will try common environment variables (`OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`, etc.).
-            Leave blank/unset if using only local endpoints (like Ollama).""",
+            """**API Key**: Optional. Enter if needed for cloud endpoints.
+            Tool will try common envs (`OPENROUTER_API_KEY`, etc.).
+            Leave blank/unset if using local endpoints (e.g. SGLang).""",
             elem_classes="api-key-warning"
         )
         gr.Markdown(
             """**Multimodal Input**: To use image inputs:
-            1. Ensure your test data (CSV/JSON/JSONL) includes a column/field containing the **local path** or **public URL** to the image.
-            2. Specify this column/field name in the 'Image Field Name' box below.
+            1. Ensure your test data (CSV/JSON/JSONL) includes a column/field containing the **local path** or **public URL** to the file.
+            2. Specify this column/field name in the 'Reference Field Name' box below.
             3. Ensure your models and endpoints support multimodal input (e.g., GPT-4o, Claude 3, LLaVA via Ollama).
             4. The model prompt should instruct the model on what to do with the image (e.g., 'Describe this image.', 'What text is in the image provided?').""",
             elem_classes="api-key-warning"
@@ -2010,7 +2009,7 @@ def create_ui():
                 # Add API Key input field
                 with gr.Row():
                      api_key_input = gr.Textbox(
-                          label="API Key (Optional - Overrides Environment Variable)",
+                          label="API Key (Optional)",
                           type="password",
                           placeholder="Enter key if required and not set via ENV",
                           info="Overrides OPENROUTER_API_KEY etc. if set. Leave blank to use ENV or for local models."
@@ -2051,7 +2050,7 @@ def create_ui():
                     with gr.Column(scale=1):
                         gr.Markdown("### Model Prompt Template")
                         model_prompt_template_input = gr.Textbox(
-                            label="Template for Champion/Challenger (use {key} for input)",
+                            label="Champion/Challenger (use {key} for input)",
                             value="{key}\nUser: Provide a detailed description\nAssistant:",
                             lines=5,
                             show_copy_button=True
@@ -2060,7 +2059,7 @@ def create_ui():
                     with gr.Column(scale=1):
                         gr.Markdown("### Judge Prompt Template")
                         judge_prompt_template_input = gr.Textbox(
-                            label="Template for Judge (see code/docs for available placeholders)",
+                            label="Judge (see code for details)",
                             value=default_judge_prompt,
                             lines=15,
                             show_copy_button=True
@@ -2070,7 +2069,7 @@ def create_ui():
                     # Test Data Input
                     with gr.Column(scale=1):
                         gr.Markdown("### Test Data")
-                        gr.Markdown("Upload a CSV/JSON/JSONL file or paste data below. Specify the field names containing the model input (key), optional reference answer (value), and optional image path/URL. Add an `id` field for stable identification (recommended).")
+                        gr.Markdown("Upload a CSV/JSON/JSONL file or paste data below. Specify the field names containing the model input (key), optional reference answer (value), and optional input path/URL. Add an `id` field for stable identification (recommended).")
                         test_data_file = gr.File(label="Upload Test Data (CSV, JSON, JSONL/NDJSON)", file_types=[".csv", ".json", ".jsonl", ".ndjson"])
                         test_data_text = gr.Textbox(label="Or Paste Test Data (JSON list or JSONL format)", lines=8, placeholder='[{"id": "t1", "prompt": "Describe image", "image_url": "/path/to/img.jpg", "reference": "..."}]\n{"id": "t2", "prompt": "Question text", "image_url": null, "reference": "..."}')
                         with gr.Row():
@@ -2305,7 +2304,7 @@ def run_cli_test():
 
         logger.info(f"Running CLI test with {len(test_cases)} test cases...")
         # Run the test
-        results = tester.run_test(
+        results_generator = tester.run_test( # Renamed variable for clarity
             test_cases,
             batch_size=2,
             batch_retry_attempts=1,
@@ -2314,11 +2313,24 @@ def run_cli_test():
             batch_retry_trigger_strings=["rate limit", "error", "timeout"]
         )
 
+        # Consume the generator to get the final result
+        final_results_dict = None
+        for res in results_generator:
+             # Assuming intermediate yields might be progress updates (optional logging)
+             # logger.debug(f"Intermediate result/progress: {res}")
+             final_results_dict = res # Keep overwriting until the last one
+
+        if final_results_dict is None:
+             logger.error("Test run generator did not yield a final result.")
+             # Handle error appropriately, maybe raise or return early
+             # For now, let's just log and proceed, it might fail later anyway
+             final_results_dict = {} # Assign empty dict to avoid immediate crash below
+
         # --- Output Results ---
         logger.info("Test completed. Final Results:")
 
         # Use the formatter function
-        summary_output = format_summary_output(results.get("summary", {}))
+        summary_output = format_summary_output(final_results_dict.get("summary", {})) # Use final_results_dict
         print("\n" + summary_output)
 
 
@@ -2328,7 +2340,7 @@ def run_cli_test():
             # Need to ensure results are serializable (dataclasses might need conversion)
             # The aggregator already converts raw evals to dicts. Summary should be fine.
             with open(results_filename, 'w', encoding='utf-8') as f:
-                json.dump(results, f, indent=2, ensure_ascii=False)
+                json.dump(final_results_dict, f, indent=2, ensure_ascii=False) # Use final_results_dict
             logger.info(f"Full results saved to {results_filename}")
             print(f"\nFull results saved to: {results_filename}")
         except TypeError as e:
