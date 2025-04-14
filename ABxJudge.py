@@ -15,7 +15,6 @@ REQUIRED_PACKAGES = [
     "requests",
     "tenacity",
     "Pillow", # For image handling (needed for dummy image in CLI test)
-    "python-dotenv", # Often useful, though not strictly required by current code
 ]
 
 def ensure_venv():
@@ -2031,12 +2030,12 @@ def create_ui():
             "3) Run Evaluations & Compare Performance."
         )
         gr.Markdown(
-            """**API Key**: Enter as needed for Cloud Endpoints; env defaults auto-evaluated (see: code)""",
+            """**API Key**: Enter as needed for Cloud Endpoints; env defaults auto-evaluated (see: [code](https://github.com/rabbidave/ZeroDay.Tools/blob/main/ABxJudge.py))""",
             elem_classes="api-key-warning"
         )
         gr.Markdown(
             """**Multimodal Input**:
-            1. Ensure your test data (CSV/JSON/JSONL) includes a column/field containing the **local path** or **public URL** to the image.
+            1. Ensure your test data (CSV/JSON/JSONL) includes a column/field containing the **local path** or **public URL** to the file.
             2. Specify this column/field name in the 'Input Field Name' box below.
             3. Ensure your models and endpoints support multimodal input 
             4. Prompt should contextualize the input (e.g., 'Describe this image.', 'Transcribe the audio.').""",
