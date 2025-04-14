@@ -2026,14 +2026,12 @@ def create_ui():
     with gr.Blocks(css=css, theme=gr.themes.Soft()) as iface:
         gr.Markdown("# A/B x Judge: AI Testing & Auto-Evaluation")
         gr.Markdown(
-            "1) Configure Champion, Challenger, and Judge"
-            "2) Provide Test Data & Reference Input"
+            "1) Configure Champion, Challenger, and Judge.\n"
+            "2) Provide Test Data & Reference Input.\n"
             "3) Run Evaluations & Compare Performance."
         )
         gr.Markdown(
-            """**API Key**: Optional. Enter if needed for cloud endpoints (OpenRouter, Anthropic, Gemini, etc.).
-            If blank, the tool will try common environment variables (`OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`, etc.).
-            Leave blank/unset if using only local endpoints (like Ollama).""",
+            """**API Key**: Enter as needed for Cloud Endpoints; env defaults auto-evaluated (see: code)""",
             elem_classes="api-key-warning"
         )
         gr.Markdown(
