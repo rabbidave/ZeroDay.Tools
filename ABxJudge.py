@@ -140,6 +140,7 @@ class ModelEndpoint:
     model_id: str
     max_tokens: int = 1024
     temperature: float = 0.0
+    file_upload_method: str = "JSON (Embedded Data)" # Options: "JSON (Embedded Data)", "Multipart Form Data"
 
     def to_dict(self):
         """Convert to dictionary."""
@@ -241,56 +242,133 @@ class ModelRunner:
         self.endpoint = endpoint
         self.prompt_template = prompt_template
 
-    def _load_and_encode_image(self, image_path_or_url: str) -> Tuple[Optional[str], Optional[str]]:
-        """Loads image from path/URL and returns (base64_string, mime_type) or (None, None)."""
+    def _load_and_encode_file(self, file_path_or_url: str) -> Tuple[Optional[str], Optional[str]]:
+        """Loads file from path/URL, base64 encodes it, and returns (base64_string, mime_type) or (None, None)."""
         try:
-            image_bytes = None
-            if urlparse(image_path_or_url).scheme in ['http', 'https']:
-                logger.info(f"Downloading image from URL: {image_path_or_url}")
-                response = requests.get(image_path_or_url, stream=True, timeout=20) # Increased timeout
+            file_bytes = None
+            if urlparse(file_path_or_url).scheme in ['http', 'https']:
+                logger.info(f"Downloading file from URL: {file_path_or_url}")
+                response = requests.get(file_path_or_url, stream=True, timeout=20) # Increased timeout
                 response.raise_for_status()
-                image_bytes = response.content
-                logger.info(f"Successfully downloaded {len(image_bytes)} bytes from URL.")
+                file_bytes = response.content
+                logger.info(f"Successfully downloaded {len(file_bytes)} bytes from URL.")
                 # Try to get mime type from headers first
                 mime_type = response.headers.get('content-type')
             else:
-                logger.info(f"Reading image from local path: {image_path_or_url}")
-                if not os.path.exists(image_path_or_url):
-                    raise FileNotFoundError(f"Image file not found at path: {image_path_or_url}")
-                with open(image_path_or_url, "rb") as f:
-                    image_bytes = f.read()
-                mime_type, _ = mimetypes.guess_type(image_path_or_url)
+                logger.info(f"Reading file from local path: {file_path_or_url}")
+                if not os.path.exists(file_path_or_url):
+                    raise FileNotFoundError(f"File not found at path: {file_path_or_url}")
+                with open(file_path_or_url, "rb") as f:
+                    file_bytes = f.read()
+                mime_type, _ = mimetypes.guess_type(file_path_or_url)
 
-            if not image_bytes:
-                 raise ValueError("Failed to load image bytes.")
+            if not file_bytes:
+                 raise ValueError("Failed to load file bytes.")
 
-            mime_type = mime_type or 'image/jpeg' # Default if guess fails or not available
-            base64_image = base64.b64encode(image_bytes).decode('utf-8')
-            logger.info(f"Successfully encoded image to base64. Mime type: {mime_type}")
-            logger.info(f"Successfully loaded and encoded image from {image_path_or_url[:50]}... Type: {mime_type}, Size: {len(base64_image)} chars base64")
-            return base64_image, mime_type
+            # Use application/octet-stream as a generic default if type cannot be guessed
+            mime_type = mime_type or 'application/octet-stream'
+            base64_data = base64.b64encode(file_bytes).decode('utf-8')
+            logger.info(f"Successfully encoded file to base64. Mime type: {mime_type}")
+            logger.info(f"Successfully loaded and encoded file from {file_path_or_url[:50]}... Type: {mime_type}, Size: {len(base64_data)} chars base64")
+            return base64_data, mime_type
         except FileNotFoundError:
-            logger.error(f"Image file not found: {image_path_or_url}")
+            logger.error(f"File not found: {file_path_or_url}")
             return None, None
         except requests.exceptions.RequestException as e:
-            logger.error(f"Failed to download image from URL {image_path_or_url}: {e}")
+            logger.error(f"Failed to download file from URL {file_path_or_url}: {e}")
             return None, None
         except Exception as e:
-            logger.error(f"Failed to load or encode image {image_path_or_url}: {e}")
+            logger.error(f"Failed to load or encode file {file_path_or_url}: {e}")
             return None, None
+
+    def _prepare_base64_data(self, file_path_or_url: str) -> Tuple[Optional[str], Optional[str]]:
+        """
+        Loads file from path/URL, determines mime type, base64 encodes it.
+        Returns (base64_string, mime_type) or (None, None) on error.
+        (This is essentially the same logic as the original _load_and_encode_file)
+        """
+        # Re-using the logic from _load_and_encode_file for now.
+        # Consider consolidating later if _load_and_encode_file is removed.
+        return self._load_and_encode_file(file_path_or_url)
+
+    def _prepare_local_file_path(self, file_path_or_url: str) -> Optional[str]:
+        """
+        Ensures a local file path exists for the given input.
+        If input is a URL, downloads it to a temporary file.
+        Returns the local path or None on error. Tracks temp files for cleanup.
+        """
+        try:
+            parsed_url = urlparse(file_path_or_url)
+            if parsed_url.scheme in ['http', 'https']:
+                logger.info(f"Downloading URL for multipart upload: {file_path_or_url}")
+                response = requests.get(file_path_or_url, stream=True, timeout=30) # Increased timeout for downloads
+                response.raise_for_status()
+
+                # Create a temporary file
+                # Suffix might help identify the file type, but not strictly necessary
+                suffix = os.path.splitext(parsed_url.path)[1]
+                temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=suffix) # Keep file after close
+                with temp_file:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        temp_file.write(chunk)
+                local_path = temp_file.name
+                logger.info(f"Downloaded URL to temporary file: {local_path}")
+                # Track temporary files for cleanup (needs instance variable)
+                if not hasattr(self, '_temp_files'):
+                    self._temp_files = []
+                self._temp_files.append(local_path)
+                return local_path
+            else:
+                # It's already a local path, verify it exists
+                if os.path.exists(file_path_or_url):
+                    logger.info(f"Using existing local file path for multipart: {file_path_or_url}")
+                    return file_path_or_url
+                else:
+                    logger.error(f"Local file path not found: {file_path_or_url}")
+                    return None
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Failed to download URL {file_path_or_url} for multipart: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Error preparing local file path {file_path_or_url}: {e}")
+            return None
+
+    def _cleanup_temp_files(self):
+        """Removes any temporary files created during URL downloads."""
+        if hasattr(self, '_temp_files'):
+            for temp_path in self._temp_files:
+                try:
+                    os.remove(temp_path)
+                    logger.info(f"Cleaned up temporary file: {temp_path}")
+                except OSError as e:
+                    logger.warning(f"Failed to clean up temporary file {temp_path}: {e}")
+            self._temp_files = [] # Reset the list
+
 
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=2, max=10),
     )
-    def generate(self, test_case: TestCase) -> ModelResponse:
-        """Call the model API with the test case, potentially including an image."""
+    def generate(
+        self,
+        test_case: TestCase,
+        # Allow passing pre-loaded data, e.g., from the judge
+        base64_data: Optional[str] = None,
+        mime_type_override: Optional[str] = None
+    ) -> ModelResponse:
+        """Call the model API with the test case, potentially including file data based on endpoint configuration."""
         start_time = time.time()
-        base64_image = None
-        mime_type = None
+        # Variables to hold prepared file data based on method
+        base64_data_loaded = None
+        mime_type_loaded = None
+        local_file_path_for_multipart = None # Path to file (potentially temporary) for multipart upload
 
-        logger.info(f"Inside generate for model '{self.endpoint.name}', test_id: {test_case.id}. Image path/URL from test case: {test_case.image_path_or_url}")
+        logger.info(f"Inside generate for model '{self.endpoint.name}', test_id: {test_case.id}. File path/URL from test case: {test_case.image_path_or_url}")
         try:
+            # Determine the required upload method early
+            upload_method = self.endpoint.file_upload_method
+            logger.info(f"Using file upload method: '{upload_method}' for endpoint '{self.endpoint.name}'")
+
             # Preprocess the input key using the global settings
             preprocessed_key = preprocess_text(test_case.key)
 
@@ -312,58 +390,54 @@ class ModelRunner:
                       logger.error(f"Error formatting prompt template: {str(e2)}. Using concatenation.")
                       prompt = f"{self.prompt_template}\n\nINPUT: {preprocessed_key}"
 
-            # --- Multimodal Input Handling ---
+            # --- File Handling Logic (Prepare based on selected method) ---
             if test_case.image_path_or_url:
-                logger.info(f"Test case {test_case.id} includes image: {test_case.image_path_or_url}")
-                base64_image, mime_type = self._load_and_encode_image(test_case.image_path_or_url)
-                logger.info(f"Result from _load_and_encode_image - Has image: {bool(base64_image)}, Mime type: {mime_type}")
-                if base64_image is None:
-                    # Handle image loading failure - return an error response
-                    logger.error(f"Failed to load image for test case {test_case.id}. Returning error.")
-                    return ModelResponse(test_id=test_case.id or "unknown", model_name=self.endpoint.name, output=f"Error: Failed to load image {test_case.image_path_or_url}", latency=time.time() - start_time)
+                 logger.info(f"Test case {test_case.id} includes file reference: {test_case.image_path_or_url}. Preparing based on method '{upload_method}'.")
+                 if upload_method == "JSON (Embedded Data)":
+                      # Use existing logic for now, will move to _prepare_base64_data helper later
+                      # Prioritize pre-loaded data if provided (e.g., by judge)
+                      if base64_data:
+                           logger.info(f"Using pre-loaded base64 data for JSON method (test case {test_case.id}). Mime type override: {mime_type_override}")
+                           base64_data_loaded = base64_data
+                           mime_type_loaded = mime_type_override or 'application/octet-stream' # Use override or default
+                      else:
+                           logger.info(f"Loading file for JSON method: {test_case.image_path_or_url}")
+                           base64_data_loaded, mime_type_loaded = self._load_and_encode_file(test_case.image_path_or_url)
+                           logger.info(f"Result from _load_and_encode_file - Has data: {bool(base64_data_loaded)}, Mime type: {mime_type_loaded}")
+                      if base64_data_loaded is None:
+                           # Handle file loading failure
+                           logger.error(f"Failed to load file for JSON method (test case {test_case.id}). Returning error.")
+                           return ModelResponse(test_id=test_case.id or "unknown", model_name=self.endpoint.name, output=f"Error: Failed to load file {test_case.image_path_or_url} for JSON method", latency=time.time() - start_time)
+                 elif upload_method == "Multipart Form Data":
+                      # Call the actual helper function
+                      local_file_path_for_multipart = self._prepare_local_file_path(test_case.image_path_or_url)
+                      if local_file_path_for_multipart is None:
+                           logger.error(f"Failed to prepare local file for Multipart method (test case {test_case.id}). Returning error.")
+                           return ModelResponse(test_id=test_case.id or "unknown", model_name=self.endpoint.name, output=f"Error: Failed to prepare file {test_case.image_path_or_url} for Multipart method", latency=time.time() - start_time)
+                 else:
+                      logger.error(f"Unknown file_upload_method configured: {upload_method}")
+                      return ModelResponse(test_id=test_case.id or "unknown", model_name=self.endpoint.name, output=f"Error: Invalid file_upload_method '{upload_method}'", latency=time.time() - start_time)
+            # else: No file involved in this test case, proceed with text-only call
 
-            # Determine API type and make appropriate call
+            # --- API Call Routing ---
             response_text = ""
-            api_url_lower = self.endpoint.api_url.lower() if self.endpoint.api_url else ""
-
             try:
-                # Add more specific checks based on common API structures
-                is_openai_compatible = "/v1/chat/completions" in api_url_lower or \
-                                        "openai" in api_url_lower or \
-                                        "openrouter.ai" in api_url_lower or \
-                                        "mistral" in api_url_lower or \
-                                        "together.ai" in api_url_lower or \
-                                        "groq.com" in api_url_lower or \
-                                        "fireworks.ai" in api_url_lower or \
-                                        "deepinfra.com" in api_url_lower or \
-                                        "lmstudio.ai" in api_url_lower or \
-                                        ":1234/v1" in api_url_lower # Common LM Studio port
+                if upload_method == "JSON (Embedded Data)":
+                    logger.info("Routing to _call_json_api.")
+                    # Call the new JSON API wrapper function
+                    response_text = self._call_json_api(prompt, base64_data_loaded, mime_type_loaded)
 
-                is_anthropic_compatible = "/v1/messages" in api_url_lower or "anthropic" in api_url_lower
-                is_gemini = "generativelanguage.googleapis.com" in api_url_lower
-                # Check for local Ollama or URLs containing 'ollama' with the generate path
-                is_ollama = ("/api/generate" in api_url_lower and \
-                             ("localhost:11434" in api_url_lower or "127.0.0.1:11434" in api_url_lower)) or \
-                            ("ollama" in api_url_lower and "/api/generate" in api_url_lower)
+                elif upload_method == "Multipart Form Data":
+                    logger.info("Routing to _call_multipart_api.")
+                    # Call the new Multipart API function
+                    response_text = self._call_multipart_api(prompt, local_file_path_for_multipart)
 
-                if is_openai_compatible:
-                    response_text = self._call_openai_compatible_api(prompt, base64_image, mime_type)
-                elif is_anthropic_compatible:
-                    response_text = self._call_anthropic_api(prompt, base64_image, mime_type)
-                elif is_gemini:
-                     response_text = self._call_gemini_api(prompt, base64_image, mime_type)
-                elif is_ollama:
-                    # Ollama's generate endpoint currently only supports images via 'images' field
-                    response_text = self._call_ollama_api(prompt, base64_image) # Ollama doesn't need mime type separately in payload
                 else:
-                    # Fallback to generic or attempt intelligent guess (assume text-only for fallback)
-                    if base64_image:
-                         logger.warning(f"Could not determine API type for {self.endpoint.api_url} with multimodal input. Attempting generic text-only call.")
-                         response_text = self._call_generic_api(prompt) # Fallback without image
-                    else:
-                         logger.warning(f"Could not determine API type for {self.endpoint.api_url}. Attempting generic call.")
-                         response_text = self._call_generic_api(prompt)
+                     # Should have been caught during file prep, but defensive check
+                     logger.error(f"Invalid file_upload_method '{upload_method}' reached API call routing.")
+                     response_text = f"Error: Invalid file upload method configuration '{upload_method}'."
 
+            # Exception handling remains the same, but applies to the new call structure
             except requests.exceptions.RequestException as req_err:
                  logger.error(f"API request failed for {self.endpoint.name}: {req_err}")
                  if hasattr(req_err, 'response') and req_err.response is not None:
@@ -377,6 +451,8 @@ class ModelRunner:
                 response_text = f"Error: An unexpected error occurred. Details: {str(e)}"
 
             end_time = time.time()
+            # Clean up temporary files regardless of success or failure
+            self._cleanup_temp_files()
 
             return ModelResponse(
                 test_id=test_case.id or "unknown", # Ensure test_id is never None
@@ -388,10 +464,33 @@ class ModelRunner:
             logger.error(f"Unexpected error in generate method for {self.endpoint.name}: {str(e)}", exc_info=True)
             # Re-raise to trigger tenacity retry
             raise
+        finally:
+             # Ensure cleanup happens even if retry fails or other unexpected errors occur
+             self._cleanup_temp_files()
 
-    def _prepare_headers(self):
-        """Prepares common headers, including Authorization if API key exists."""
-        headers = {"Content-Type": "application/json"}
+    def _prepare_headers(self, is_json_request=True):
+        """Prepares common headers. Adjusts Content-Type based on request type."""
+        # Start with common headers
+        headers = {}
+        # Only add Authorization header if api_key is present and not empty
+        if self.endpoint.api_key and self.endpoint.api_key.strip():
+            # Check for specific API key types if needed (e.g., Anthropic uses x-api-key)
+            if "anthropic" in self.endpoint.api_url.lower():
+                 headers["x-api-key"] = self.endpoint.api_key
+                 headers["anthropic-version"] = "2023-06-01" # Required header
+            elif "generativelanguage.googleapis.com" in self.endpoint.api_url.lower():
+                 # Gemini API key is usually in the URL, not header
+                 pass
+            else:
+                 # Default to Bearer token for OpenAI compatible and others
+                 headers["Authorization"] = f"Bearer {self.endpoint.api_key}"
+
+        # Set Content-Type based on whether it's a JSON request or not (e.g., multipart)
+        if is_json_request:
+            headers["Content-Type"] = "application/json"
+        # For multipart/form-data, requests library handles Content-Type automatically when 'files' param is used.
+
+        # Add OpenRouter specific headers if applicable
         # Only add Authorization header if api_key is present and not empty
         if self.endpoint.api_key and self.endpoint.api_key.strip():
             headers["Authorization"] = f"Bearer {self.endpoint.api_key}"
@@ -403,297 +502,229 @@ class ModelRunner:
              headers["X-Title"] = "Model A/B Testing Tool"
         return headers
 
-    def _call_openai_compatible_api(self, prompt: str, image_base64: Optional[str] = None, mime_type: Optional[str] = None) -> str:
-        """Calls APIs following the OpenAI chat completions format (including multimodal)."""
-        logger.info(f"Calling OpenAI-compatible API: {self.endpoint.api_url} for model {self.endpoint.model_id}")
-        headers = self._prepare_headers()
+    # --- New API Call Functions ---
 
-        # Construct messages payload - handling multimodal input
+    def _call_json_api(self, prompt: str, base64_data: Optional[str], mime_type: Optional[str]) -> str:
+        """
+        Wrapper for JSON-based API calls. Detects API type and calls the appropriate formatter.
+        """
+        logger.info(f"Executing JSON API call for endpoint: {self.endpoint.name}")
+        headers = self._prepare_headers(is_json_request=True) # Ensure JSON content type
+
+        # Determine API type based on URL (similar to previous logic)
+        api_url_lower = self.endpoint.api_url.lower() if self.endpoint.api_url else ""
+        is_openai_compatible = "/v1/chat/completions" in api_url_lower or \
+                                "openai" in api_url_lower or \
+                                "openrouter.ai" in api_url_lower or \
+                                "mistral" in api_url_lower or \
+                                "together.ai" in api_url_lower or \
+                                "groq.com" in api_url_lower or \
+                                "fireworks.ai" in api_url_lower or \
+                                "deepinfra.com" in api_url_lower or \
+                                "lmstudio.ai" in api_url_lower or \
+                                ":1234/v1" in api_url_lower
+        is_anthropic_compatible = "/v1/messages" in api_url_lower or "anthropic" in api_url_lower
+        is_gemini = "generativelanguage.googleapis.com" in api_url_lower
+        is_ollama = ("/api/generate" in api_url_lower and \
+                     ("localhost:11434" in api_url_lower or "127.0.0.1:11434" in api_url_lower)) or \
+                    ("ollama" in api_url_lower and "/api/generate" in api_url_lower)
+
+        payload = {}
+        api_url_to_call = self.endpoint.api_url # Default URL
+
+        # Call appropriate formatting function
+        if is_openai_compatible:
+            payload = self._format_openai_json(prompt, base64_data, mime_type)
+        elif is_anthropic_compatible:
+            payload = self._format_anthropic_json(prompt, base64_data, mime_type)
+        elif is_gemini:
+            payload = self._format_gemini_json(prompt, base64_data, mime_type)
+            # Gemini API key goes in URL parameter
+            if self.endpoint.api_key:
+                 api_url_to_call = f"{self.endpoint.api_url}?key={self.endpoint.api_key}"
+            else:
+                 raise ValueError("Gemini API key is required but not provided.")
+        elif is_ollama:
+            payload = self._format_ollama_json(prompt, base64_data)
+        else:
+            # Fallback: Use generic API call logic (which currently assumes OpenAI text-only)
+            logger.warning(f"Could not determine specific JSON API type for {self.endpoint.api_url}. Using generic fallback.")
+            # The generic call handles its own request formatting and execution
+            return self._call_generic_api(prompt) # Return directly
+
+        # Make the actual request
+        try:
+            payload_size_kb = len(json.dumps(payload)) / 1024
+            logger.info(f"Sending JSON request to {api_url_to_call}. Payload size: {payload_size_kb:.2f} KB")
+            if payload_size_kb > 4000: logger.warning(f"Payload size ({payload_size_kb:.2f} KB) is large.")
+
+            response = requests.post(api_url_to_call, headers=headers, json=payload, timeout=180)
+            response.raise_for_status()
+            result = response.json()
+
+            # Parse response based on API type (This parsing logic should ideally move too)
+            # TODO: Move response parsing into dedicated functions or handle within formatters?
+            if is_openai_compatible:
+                if not result.get("choices") or not result["choices"][0].get("message"): raise ValueError("Invalid OpenAI response format")
+                content = result["choices"][0]["message"].get("content")
+                return content if content is not None else f"Error: Response content was null (Finish Reason: {result['choices'][0].get('finish_reason')})"
+            elif is_anthropic_compatible:
+                if not result.get("content"): raise ValueError("Invalid Anthropic response format")
+                text_content = next((block.get("text", "") for block in result.get("content", []) if block.get("type") == "text"), "")
+                return text_content if text_content else "[No text content found in response]"
+            elif is_gemini:
+                if not result.get("candidates"): raise ValueError("Invalid Gemini response format")
+                candidate = result["candidates"][0]
+                if not candidate.get("content") or not candidate["content"].get("parts"): raise ValueError("Invalid Gemini response format")
+                text_response = "".join(part["text"] for part in candidate["content"]["parts"] if "text" in part)
+                return text_response if text_response else "[No text content found in response]"
+            elif is_ollama:
+                if "response" in result: return result["response"]
+                elif "error" in result: raise ValueError(f"Ollama API Error: {result['error']}")
+                else: raise ValueError("Invalid Ollama response format")
+            else:
+                 # Should not be reached if generic fallback worked
+                 raise ValueError("Unhandled API type in JSON response parsing.")
+
+        except requests.exceptions.RequestException as e:
+            logger.error(f"JSON API request failed: {str(e)}")
+            if hasattr(e, 'response') and e.response is not None: logger.error(f"Response content: {e.response.text[:500]}")
+            raise # Re-raise to be caught by the main generate method's handler
+        except (KeyError, IndexError, ValueError, json.JSONDecodeError) as e:
+            logger.error(f"Failed to parse JSON API response: {str(e)}")
+            logger.error(f"Full response: {result if 'result' in locals() else 'Response not available'}")
+            raise # Re-raise
+
+    def _call_multipart_api(self, prompt: str, local_file_path: Optional[str]) -> str:
+        """
+        Handles API calls using multipart/form-data.
+        (Placeholder - Needs implementation based on target API, e.g., Whisper)
+        """
+        logger.info(f"Executing Multipart API call for endpoint: {self.endpoint.name}")
+        if not local_file_path:
+             return "Error: No local file path provided for multipart upload."
+
+        # Prepare headers (Requests handles Content-Type for multipart)
+        headers = self._prepare_headers(is_json_request=False)
+
+        # Prepare data and files dictionary - THIS IS HIGHLY API-SPECIFIC
+        # Example for OpenAI Whisper:
+        data = {'model': self.endpoint.model_id}
+        if prompt: # Whisper uses 'prompt' for context/hints
+             data['prompt'] = prompt
+        # Add other potential fields like 'language', 'response_format' based on API
+
+        files = {}
+        try:
+             # Use a context manager to ensure the file is closed
+             with open(local_file_path, 'rb') as f:
+                  files['file'] = (os.path.basename(local_file_path), f)
+                  logger.info(f"Preparing multipart request with file: {os.path.basename(local_file_path)}")
+
+                  # Make the request
+                  response = requests.post(
+                       self.endpoint.api_url,
+                       headers=headers,
+                       data=data,
+                       files=files,
+                       timeout=180 # Timeout for upload + processing
+                  )
+                  response.raise_for_status()
+                  result = response.json()
+
+             # Parse the response - AGAIN, API-SPECIFIC
+             # Example for Whisper:
+             if 'text' in result:
+                  return result['text']
+             else:
+                  raise ValueError(f"Unexpected response format from multipart API: {result}")
+
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Multipart API request failed: {str(e)}")
+            if hasattr(e, 'response') and e.response is not None: logger.error(f"Response content: {e.response.text[:500]}")
+            raise
+        except (KeyError, ValueError, json.JSONDecodeError) as e:
+            logger.error(f"Failed to parse Multipart API response: {str(e)}")
+            logger.error(f"Full response: {result if 'result' in locals() else 'Response not available'}")
+            raise
+        except FileNotFoundError:
+             logger.error(f"File not found for multipart upload: {local_file_path}")
+             return f"Error: File not found at {local_file_path}"
+        except Exception as e:
+             logger.error(f"Unexpected error during multipart call: {e}", exc_info=True)
+             raise
+
+    # --- JSON Formatting Functions (Placeholders) ---
+
+    def _format_openai_json(self, prompt: str, base64_data: Optional[str], mime_type: Optional[str]) -> Dict[str, Any]:
+        """Formats the payload for OpenAI-compatible chat completion APIs."""
+        logger.debug("Formatting payload for OpenAI JSON")
         messages = []
-        logger.info(f"Checking for image data before constructing payload. Has image: {bool(image_base64)}, Mime type: {mime_type}")
-        if image_base64:
-            logger.info("Constructing OpenAI multimodal payload.")
-            logger.info("Image data found. Proceeding with multimodal payload construction.") # Indentation should be correct relative to if block
-            # Ensure mime_type is set, default if necessary
-            mime_type = mime_type or 'image/jpeg'
+        if base64_data:
+            mime_type = mime_type or 'image/jpeg' # Default mime type
             messages.append({
                 "role": "user",
                 "content": [
                     {"type": "text", "text": prompt},
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": f"data:{mime_type};base64,{image_base64}"}
-                    }
+                    {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{base64_data}"}}
                 ]
             })
         else:
-            # Text-only payload
-            logger.info("Constructing OpenAI text-only payload.")
-            logger.info("No image data found or image loading failed. Proceeding with text-only payload construction.") # Indentation should be correct relative to else block
             messages.append({"role": "user", "content": prompt})
-
-        data = {
+        return {
             "model": self.endpoint.model_id,
             "messages": messages,
             "max_tokens": self.endpoint.max_tokens,
             "temperature": self.endpoint.temperature,
         }
-        try:
-            # Log payload size for debugging potential issues
-            payload_size_kb = len(json.dumps(data)) / 1024
-            logger.info(f"Sending OpenAI-compatible request. Payload size: {payload_size_kb:.2f} KB")
-            if payload_size_kb > 4000: # Log warning for potentially large payloads
-                logger.warning(f"Payload size ({payload_size_kb:.2f} KB) is large, may exceed limits.")
 
-            response = requests.post(self.endpoint.api_url, headers=headers, json=data, timeout=180) # Increased timeout for multimodal
-            response.raise_for_status() # Raises HTTPError for bad responses (4xx or 5xx)
-            result = response.json()
-            if not result.get("choices"):
-                 raise ValueError(f"Invalid response format: 'choices' key missing or empty. Response: {result}")
-            if not result["choices"][0].get("message"):
-                 raise ValueError(f"Invalid response format: 'message' key missing in first choice. Response: {result}")
-            if result["choices"][0]["message"].get("content") is None:
-                 logger.warning(f"Response content is null for model {self.endpoint.model_id}. Check finish reason: {result['choices'][0].get('finish_reason')}")
-                 return f"Error: Response content was null (Finish Reason: {result['choices'][0].get('finish_reason')})"
-            return result["choices"][0]["message"]["content"]
-        except requests.exceptions.RequestException as e:
-            logger.error(f"OpenAI-compatible request failed: {str(e)}")
-            if hasattr(e, 'response') and e.response is not None: logger.error(f"Response content: {e.response.text[:500]}")
-            raise
-        except (KeyError, IndexError, ValueError) as e:
-            logger.error(f"Failed to parse OpenAI-compatible response: {str(e)}")
-            logger.error(f"Full response: {result if 'result' in locals() else 'Response not available'}")
-            raise
-
-    def _call_anthropic_api(self, prompt: str, image_base64: Optional[str] = None, mime_type: Optional[str] = None) -> str:
-        """Calls the Anthropic messages API (including multimodal)."""
-        logger.info(f"Calling Anthropic API: {self.endpoint.api_url} for model {self.endpoint.model_id}")
-        headers = self._prepare_headers()
-        # Anthropic requires API key via header, not Bearer token
-        if "Authorization" in headers: del headers["Authorization"]
-        if self.endpoint.api_key: headers["x-api-key"] = self.endpoint.api_key
-        else: raise ValueError("Anthropic API key is required but not provided.")
-        headers["anthropic-version"] = "2023-06-01" # Required header
-
-        # Construct messages payload - handling multimodal input
-        messages = []
-        content = []
-        content.append({"type": "text", "text": prompt})
-
-        if image_base64:
-            logger.info("Constructing Anthropic multimodal payload.")
-            # Ensure mime_type is set, default if necessary
+    def _format_anthropic_json(self, prompt: str, base64_data: Optional[str], mime_type: Optional[str]) -> Dict[str, Any]:
+        """Formats the payload for Anthropic messages API."""
+        logger.debug("Formatting payload for Anthropic JSON")
+        content = [{"type": "text", "text": prompt}]
+        if base64_data:
             mime_type = mime_type or 'image/jpeg'
-            # Check common image types supported by Claude
             supported_mime_types = ['image/jpeg', 'image/png', 'image/gif', 'image/webp']
             if mime_type not in supported_mime_types:
-                 logger.warning(f"MIME type '{mime_type}' may not be directly supported by Claude. Using it anyway.")
+                 logger.warning(f"MIME type '{mime_type}' may not be directly supported by Claude.")
             content.append({
                 "type": "image",
-                "source": {
-                    "type": "base64",
-                    "media_type": mime_type,
-                    "data": image_base64
-                }
+                "source": {"type": "base64", "media_type": mime_type, "data": base64_data}
             })
-        else:
-            logger.info("Constructing Anthropic text-only payload.")
-
-        messages.append({
-            "role": "user",
-            "content": content
-        })
-
-        data = {
+        return {
             "model": self.endpoint.model_id,
-            "messages": messages,
+            "messages": [{"role": "user", "content": content}],
             "max_tokens": self.endpoint.max_tokens,
             "temperature": self.endpoint.temperature,
         }
-        try:
-            # Log payload size
-            payload_size_kb = len(json.dumps(data)) / 1024
-            logger.info(f"Sending Anthropic request. Payload size: {payload_size_kb:.2f} KB")
 
-            response = requests.post(self.endpoint.api_url, headers=headers, json=data, timeout=180) # Increased timeout
-            response.raise_for_status()
-            result = response.json()
-            if not result.get("content"):
-                 raise ValueError(f"Invalid response format: 'content' key missing or empty. Response: {result}")
-            # Find the first text block in the response content array
-            text_content = ""
-            for block in result.get("content", []):
-                 if block.get("type") == "text":
-                      text_content = block.get("text", "")
-                      break
-            if not text_content and result.get("stop_reason") == "max_tokens":
-                 logger.warning("Anthropic response had no text content and hit max_tokens.")
-                 return "[Reached Max Tokens - No text content returned]"
-            elif not text_content:
-                 logger.warning(f"Anthropic response had no text block. Full response: {result}")
-                 return "[No text content found in response]"
-            return text_content
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Anthropic request failed: {str(e)}")
-            if hasattr(e, 'response') and e.response is not None: logger.error(f"Response content: {e.response.text[:500]}")
-            raise
-        except (KeyError, IndexError, ValueError) as e:
-            logger.error(f"Failed to parse Anthropic response: {str(e)}")
-            logger.error(f"Full response: {result if 'result' in locals() else 'Response not available'}")
-            raise
-
-    def _call_ollama_api(self, prompt: str, image_base64: Optional[str] = None) -> str:
-        """Calls the Ollama generate API (including multimodal image support)."""
-        logger.info(f"Calling Ollama API: {self.endpoint.api_url} for model {self.endpoint.model_id}")
-        # Ollama doesn't use API keys or standard Bearer tokens via this endpoint
-        headers = {"Content-Type": "application/json"}
-
-        data = {
-            "model": self.endpoint.model_id,
-            "prompt": prompt,
-            "stream": False, # Ensure we get the full response at once
-            # "options": {
-            #     "temperature": self.endpoint.temperature,
-            #     # Add num_predict if max_tokens is set and > 0
-            #     # Ollama might ignore it if the model doesn't support it well
-            #      **({"num_predict": self.endpoint.max_tokens} if self.endpoint.max_tokens > 0 else {})
-            # }
-        }
-
-        # Add image data if provided
-        if image_base64:
-            logger.info(f"Adding base64 image to Ollama request for model {self.endpoint.model_id}")
-            # Ollama expects a list of base64 encoded images
-            data["images"] = [image_base64]
-            logger.info("Constructing Ollama multimodal payload.")
-        else:
-             logger.info("Constructing Ollama text-only payload.")
-
-        try:
-            # Log payload size
-            payload_size_kb = len(json.dumps(data)) / 1024 # Approximate size
-            logger.info(f"Sending Ollama request. Payload size: {payload_size_kb:.2f} KB")
-
-            response = requests.post(self.endpoint.api_url, headers=headers, json=data, timeout=300) # Longer timeout for local/potentially slow models
-            response.raise_for_status()
-            result = response.json()
-
-            # Check for standard response field
-            if "response" in result:
-                return result["response"]
-            # Check for potential error field (Ollama might return error this way)
-            elif "error" in result:
-                logger.error(f"Ollama API returned an error: {result['error']}")
-                raise ValueError(f"Ollama API Error: {result['error']}")
-            else:
-                 # Handle cases where the response might be different (e.g., streaming was accidentally left on)
-                 # For non-streaming, the expected key is 'response'. If it's missing, it's an issue.
-                 raise ValueError(f"Invalid response format: 'response' key missing and no 'error' key. Response: {result}")
-
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Ollama request failed: {str(e)}")
-            if hasattr(e, 'response') and e.response is not None: logger.error(f"Response content: {e.response.text[:500]}")
-            raise
-        except (KeyError, ValueError) as e:
-            logger.error(f"Failed to parse Ollama response or invalid response structure: {str(e)}")
-            logger.error(f"Full response: {result if 'result' in locals() else 'Response not available'}")
-            raise
-
-    def _call_gemini_api(self, prompt: str, image_base64: Optional[str] = None, mime_type: Optional[str] = None) -> str:
-        """Calls the Google Gemini API (including multimodal)."""
-        logger.info(f"Calling Gemini API for model {self.endpoint.model_id}")
-        if not self.endpoint.api_key:
-             raise ValueError("Gemini API key is required but not provided.")
-        # Gemini uses API key in the URL usually
-        api_url = f"{self.endpoint.api_url}?key={self.endpoint.api_key}"
-        headers = {"Content-Type": "application/json"}
-
-        # Construct parts payload - handling multimodal input
-        parts = []
-        parts.append({"text": prompt})
-
-        if image_base64:
-            logger.info("Constructing Gemini multimodal payload.")
-            # Ensure mime_type is set, default if necessary
-            mime_type = mime_type or 'image/jpeg'
-            parts.append({
-                "inline_data": {
-                    "mime_type": mime_type,
-                    "data": image_base64
-                }
-            })
-        else:
-             logger.info("Constructing Gemini text-only payload.")
-
-        data = {
+    def _format_gemini_json(self, prompt: str, base64_data: Optional[str], mime_type: Optional[str]) -> Dict[str, Any]:
+        """Formats the payload for Google Gemini API."""
+        logger.debug("Formatting payload for Gemini JSON")
+        parts = [{"text": prompt}]
+        if base64_data:
+            mime_type = mime_type or 'application/octet-stream' # Gemini supports various types
+            parts.append({"inline_data": {"mime_type": mime_type, "data": base64_data}})
+        return {
             "contents": [{"parts": parts}],
             "generationConfig": {
                 "temperature": self.endpoint.temperature,
                 "maxOutputTokens": self.endpoint.max_tokens,
-                # Add safety settings if needed, e.g., "safetySettings": [{"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"}]
             }
         }
-        try:
-            # Log payload size
-            payload_size_kb = len(json.dumps(data)) / 1024
-            logger.info(f"Sending Gemini request. Payload size: {payload_size_kb:.2f} KB")
 
-            response = requests.post(api_url, headers=headers, json=data, timeout=180) # Increased timeout
-            response.raise_for_status()
-            result = response.json()
+    def _format_ollama_json(self, prompt: str, base64_data: Optional[str]) -> Dict[str, Any]:
+        """Formats the payload for Ollama generate API."""
+        logger.debug("Formatting payload for Ollama JSON")
+        data = {
+            "model": self.endpoint.model_id,
+            "prompt": prompt,
+            "stream": False,
+        }
+        if base64_data:
+            data["images"] = [base64_data] # Ollama expects a list
+        return data
 
-            # Navigate the Gemini response structure carefully
-            if not result.get("candidates"):
-                # Check for promptFeedback for block reasons
-                if result.get("promptFeedback", {}).get("blockReason"):
-                    block_reason = result["promptFeedback"]["blockReason"]
-                    logger.error(f"Gemini API blocked the prompt. Reason: {block_reason}")
-                    return f"Error: Prompt blocked by API - {block_reason}"
-                raise ValueError(f"Invalid response format: 'candidates' key missing or empty. Response: {result}")
-
-            candidate = result["candidates"][0]
-            if not candidate.get("content") or not candidate["content"].get("parts"):
-                 # Check finishReason
-                 finish_reason = candidate.get("finishReason")
-                 if finish_reason and finish_reason != "STOP":
-                     logger.error(f"Gemini generation stopped unexpectedly. Reason: {finish_reason}")
-                     # Check safetyRatings if stopped for safety
-                     safety_ratings = candidate.get("safetyRatings")
-                     if safety_ratings:
-                         logger.error(f"Safety Ratings: {safety_ratings}")
-                     return f"Error: Generation stopped - {finish_reason}"
-                 raise ValueError(f"Invalid response format: 'content' or 'parts' missing. Finish Reason: {finish_reason}. Response: {result}")
-
-            # Find the text part in the response
-            text_response = ""
-            for part in candidate["content"]["parts"]:
-                if "text" in part:
-                    text_response += part["text"] # Concatenate if multiple text parts exist
-
-            if not text_response and candidate.get("finishReason") != "STOP":
-                 logger.warning(f"Gemini response had no text part. Finish Reason: {candidate.get('finishReason')}. Full response: {result}")
-                 return f"[No text content found in response - Finish Reason: {candidate.get('finishReason')}]"
-
-            return text_response
-
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Gemini request failed: {str(e)}")
-            if hasattr(e, 'response') and e.response is not None: logger.error(f"Response content: {e.response.text[:500]}")
-            raise
-        except (KeyError, IndexError, ValueError) as e:
-            logger.error(f"Failed to parse Gemini response: {str(e)}")
-            logger.error(f"Full response: {result if 'result' in locals() else 'Response not available'}")
-            raise
-
-    def _call_generic_api(self, prompt: str) -> str:
-        """Attempts a generic POST request, assuming OpenAI-like structure as a guess (text-only)."""
-        logger.warning(f"Attempting generic API call (assuming OpenAI text-only format) to: {self.endpoint.api_url}")
-        try:
-            # Try OpenAI text-only format as the most common fallback
-            return self._call_openai_compatible_api(prompt) # Will call with image=None
-        except Exception as e:
-            logger.error(f"Generic API call failed: {str(e)}. Returning error message.")
-            return f"Error: Failed to call or parse response from generic API endpoint {self.endpoint.api_url}. Please check configuration and API documentation. Details: {str(e)}"
 
 class LMJudge:
     """Uses a language model to judge between champion and challenger outputs."""
@@ -749,8 +780,8 @@ CONFIDENCE: 4/5
         self.evaluation_prompt_template = evaluation_prompt_template
         # The judge runner uses a simple placeholder template, as the full prompt
         # is formatted within the evaluate method before being passed as the 'key'.
-        # Judge model is assumed to be text-only for evaluation.
-        self.model_runner = ModelRunner(endpoint, "{key}") # Pass-through template
+        # Judge model runner needs access to the file loading method.
+        self.model_runner = ModelRunner(endpoint, "{key}") # Pass-through template for prompt
 
     def evaluate(
         self,
@@ -805,16 +836,22 @@ CONFIDENCE: 4/5
         # Log the prompt for debugging (truncated)
         logger.info(f"Using Judge evaluation prompt (truncated): {evaluation_prompt[:500]}...")
 
-        # Get judge's response using the constructed prompt as the 'key'
-        # Judge does not receive the image.
+        # Create a TestCase specifically for the judge call.
+        # Crucially, pass the original image_path_or_url from the test_case.
+        # The judge's model_runner.generate method will handle loading the file
+        # based on the judge's endpoint.file_upload_method configuration.
         judge_test_case = TestCase(
             key=evaluation_prompt,
             value="", # No value needed for judge call itself
-            # Pass the original image path/URL to the judge if it exists
-            image_path_or_url=test_case.image_path_or_url,
+            image_path_or_url=test_case.image_path_or_url, # Pass original file reference
             id=f"judge-{test_case.id or 'unknown'}"
         )
-        judge_response_obj = self.model_runner.generate(judge_test_case)
+
+        # Call the judge's generate method. It will handle file loading internally.
+        # We no longer need to pass base64_data or mime_type_override here.
+        judge_response_obj = self.model_runner.generate(
+            test_case=judge_test_case
+        )
 
         # Log the response for debugging (truncated)
         logger.info(f"Judge raw response (truncated): {judge_response_obj.output[:500]}...")
@@ -1590,11 +1627,11 @@ def format_summary_output(summary_data: Dict[str, Any]) -> str:
     return output
 
 def run_test_from_ui(
-    # Model Configs (15 inputs)
-    champ_name, champ_api_url, champ_model_id, champ_temp, champ_max_tokens,
-    chall_name, chall_api_url, chall_model_id, chall_temp, chall_max_tokens,
-    judge_name, judge_api_url, judge_model_id, judge_temp, judge_max_tokens,
-    # API Key (1 input) - Potentially optional now
+    # Model Configs (18 inputs now, including upload method)
+    champ_name, champ_api_url, champ_model_id, champ_temp, champ_max_tokens, champ_file_upload_method,
+    chall_name, chall_api_url, chall_model_id, chall_temp, chall_max_tokens, chall_file_upload_method,
+    judge_name, judge_api_url, judge_model_id, judge_temp, judge_max_tokens, judge_file_upload_method,
+    # API Key (1 input)
     api_key_input,
     # Prompts (2 inputs)
     model_prompt_template_input,
@@ -1660,10 +1697,10 @@ def run_test_from_ui(
              raise gr.Error("No valid test cases were loaded.")
 
         progress(0.2, desc="Configuring models...")
-        # 3. Create Model Endpoints (Pass the potentially found api_key)
+        # 3. Create Model Endpoints (Pass the potentially found api_key and upload method)
         try:
-            # Helper to create endpoint, ensuring types
-            def create_ep(name, url, model_id, temp, max_tok, key):
+            # Helper to create endpoint, ensuring types and including upload method
+            def create_ep(name, url, model_id, temp, max_tok, key, upload_method):
                  # Strip whitespace from URL and model ID
                  url = str(url).strip() if url else ""
                  model_id = str(model_id).strip() if model_id else ""
@@ -1671,20 +1708,24 @@ def run_test_from_ui(
                  if not name: raise ValueError("Model Display Name cannot be empty.")
                  if not url: raise ValueError(f"API URL cannot be empty for model '{name}'.")
                  if not model_id: raise ValueError(f"Model ID cannot be empty for model '{name}'.")
-                 # Use the potentially loaded key
+                 # Validate upload method
+                 if upload_method not in ["JSON (Embedded Data)", "Multipart Form Data"]:
+                      raise ValueError(f"Invalid file upload method '{upload_method}' for model '{name}'.")
+                 # Use the potentially loaded key and upload method
                  return ModelEndpoint(
                      name=str(name), api_url=url, api_key=key, model_id=model_id,
-                     temperature=float(temp), max_tokens=int(max_tok)
+                     temperature=float(temp), max_tokens=int(max_tok),
+                     file_upload_method=str(upload_method) # Add file upload method
                  )
 
-            champion_endpoint = create_ep(champ_name, champ_api_url, champ_model_id, champ_temp, champ_max_tokens, api_key)
-            challenger_endpoint = create_ep(chall_name, chall_api_url, chall_model_id, chall_temp, chall_max_tokens, api_key)
-            judge_endpoint = create_ep(judge_name, judge_api_url, judge_model_id, judge_temp, judge_max_tokens, api_key)
+            champion_endpoint = create_ep(champ_name, champ_api_url, champ_model_id, champ_temp, champ_max_tokens, api_key, champ_file_upload_method)
+            challenger_endpoint = create_ep(chall_name, chall_api_url, chall_model_id, chall_temp, chall_max_tokens, api_key, chall_file_upload_method)
+            judge_endpoint = create_ep(judge_name, judge_api_url, judge_model_id, judge_temp, judge_max_tokens, api_key, judge_file_upload_method)
 
-            # Log endpoints being used (mask key if present)
-            logger.info(f"Champion Endpoint: {champion_endpoint.name}, URL: {champion_endpoint.api_url}, Model: {champion_endpoint.model_id}, Key Provided: {'Yes' if champion_endpoint.api_key else 'No'}")
-            logger.info(f"Challenger Endpoint: {challenger_endpoint.name}, URL: {challenger_endpoint.api_url}, Model: {challenger_endpoint.model_id}, Key Provided: {'Yes' if challenger_endpoint.api_key else 'No'}")
-            logger.info(f"Judge Endpoint: {judge_endpoint.name}, URL: {judge_endpoint.api_url}, Model: {judge_endpoint.model_id}, Key Provided: {'Yes' if judge_endpoint.api_key else 'No'}")
+            # Log endpoints being used (mask key if present, add upload method)
+            logger.info(f"Champion Endpoint: {champion_endpoint.name}, URL: {champion_endpoint.api_url}, Model: {champion_endpoint.model_id}, Upload: {champion_endpoint.file_upload_method}, Key Provided: {'Yes' if champion_endpoint.api_key else 'No'}")
+            logger.info(f"Challenger Endpoint: {challenger_endpoint.name}, URL: {challenger_endpoint.api_url}, Model: {challenger_endpoint.model_id}, Upload: {challenger_endpoint.file_upload_method}, Key Provided: {'Yes' if challenger_endpoint.api_key else 'No'}")
+            logger.info(f"Judge Endpoint: {judge_endpoint.name}, URL: {judge_endpoint.api_url}, Model: {judge_endpoint.model_id}, Upload: {judge_endpoint.file_upload_method}, Key Provided: {'Yes' if judge_endpoint.api_key else 'No'}")
 
         except ValueError as ve:
              logger.error(f"Model Configuration Error: {ve}")
@@ -1985,21 +2026,21 @@ def create_ui():
     with gr.Blocks(css=css, theme=gr.themes.Soft()) as iface:
         gr.Markdown("# Model A/B Testing & Evaluation Tool")
         gr.Markdown(
-            "A) Configure Champion, Challenger, and Judge"
-            "B) Configure Input/Output & Test Parameters"
+            "Configure champion, challenger, and judge models, provide test data (including optional images), "
+            "and run evaluations to compare model performance."
         )
         gr.Markdown(
-            """**API Key**: Optional. Enter if needed for cloud endpoints.
-            Tool will try common envs (`OPENROUTER_API_KEY`, etc.).
-            Leave blank/unset if using local endpoints (e.g. SGLang).""",
+            """**API Key**: Optional. Enter if needed for cloud endpoints (OpenRouter, Anthropic, Gemini, etc.).
+            If blank, the tool will try common environment variables (`OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`, etc.).
+            Leave blank/unset if using only local endpoints (like Ollama).""",
             elem_classes="api-key-warning"
         )
         gr.Markdown(
-            """**Multimodal Input**: To use image inputs:
-            1. Ensure your test data (CSV/JSON/JSONL) includes a column/field containing the **local path** or **public URL** to the file.
-            2. Specify this column/field name in the 'Reference Field Name' box below.
-            3. Ensure your models and endpoints support multimodal input (e.g., GPT-4o, Claude 3, LLaVA via Ollama).
-            4. The model prompt should instruct the model on what to do with the image (e.g., 'Describe this image.', 'What text is in the image provided?').""",
+            """**Multimodal Input**:
+            1. Ensure your test data (CSV/JSON/JSONL) includes a column/field containing the **local path** or **public URL** to the image.
+            2. Specify this column/field name in the 'Input Field Name' box below.
+            3. Ensure your models and endpoints support multimodal input 
+            4. Prompt should contextualize the input (e.g., 'Describe this image.', 'Transcribe the audio.').""",
             elem_classes="api-key-warning"
         )
 
@@ -2009,10 +2050,10 @@ def create_ui():
                 # Add API Key input field
                 with gr.Row():
                      api_key_input = gr.Textbox(
-                          label="API Key (Optional)",
+                          label="API Key (Optional)", # Simplified label
                           type="password",
-                          placeholder="Enter key if required and not set via ENV",
-                          info="Overrides OPENROUTER_API_KEY etc. if set. Leave blank to use ENV or for local models."
+                          placeholder="Enter key if required for cloud endpoints",
+                          info="Overrides environment variables (e.g., OPENROUTER_API_KEY). Leave blank to use ENV or for local models."
                      )
                 with gr.Row():
                     # Champion Model Configuration
@@ -2025,6 +2066,12 @@ def create_ui():
                               champ_model_id = gr.Textbox(label="Model ID", value="gemma-3-12b-it") # User specified
                               champ_temp = gr.Slider(label="Temperature", minimum=0.0, maximum=2.0, step=0.1, value=0.1)
                               champ_max_tokens = gr.Number(label="Max Tokens", value=8192, precision=0)
+                              champ_file_upload_method = gr.Dropdown(
+                                   label="File Upload Method",
+                                   choices=["JSON (Embedded Data)", "Multipart Form Data"],
+                                   value="JSON (Embedded Data)",
+                                   info="How to send file data (if any) to this endpoint."
+                              )
                     # Challenger Model Configuration
                     with gr.Column(scale=1):
                          with gr.Group(elem_classes="model-config-group"):
@@ -2035,6 +2082,12 @@ def create_ui():
                               chall_model_id = gr.Textbox(label="Model ID", value="gemma-3-4b-it") # User specified
                               chall_temp = gr.Slider(label="Temperature", minimum=0.0, maximum=2.0, step=0.1, value=0.1)
                               chall_max_tokens = gr.Number(label="Max Tokens", value=8192, precision=0)
+                              chall_file_upload_method = gr.Dropdown(
+                                   label="File Upload Method",
+                                   choices=["JSON (Embedded Data)", "Multipart Form Data"],
+                                   value="JSON (Embedded Data)",
+                                   info="How to send file data (if any) to this endpoint."
+                              )
                     # Judge Model Configuration
                     with gr.Column(scale=1):
                          with gr.Group(elem_classes="model-config-group"):
@@ -2044,13 +2097,19 @@ def create_ui():
                               judge_model_id = gr.Textbox(label="Model ID", value="gemma-3-27b-it") # User specified
                               judge_temp = gr.Slider(label="Temperature", minimum=0.0, maximum=1.0, step=0.1, value=0.0) # Judge usually deterministic
                               judge_max_tokens = gr.Number(label="Max Tokens", value=8192, precision=0) # Judge might need more tokens
+                              judge_file_upload_method = gr.Dropdown(
+                                   label="File Upload Method",
+                                   choices=["JSON (Embedded Data)", "Multipart Form Data"],
+                                   value="JSON (Embedded Data)",
+                                   info="How to send file data (if any) to this endpoint."
+                              )
 
                 with gr.Row():
                     # Model Prompt Template
                     with gr.Column(scale=1):
                         gr.Markdown("### Model Prompt Template")
                         model_prompt_template_input = gr.Textbox(
-                            label="Champion/Challenger (use {key} for input)",
+                            label="Template for Champion/Challenger (use {key} for input)",
                             value="{key}\nUser: Provide a detailed description\nAssistant:",
                             lines=5,
                             show_copy_button=True
@@ -2059,7 +2118,7 @@ def create_ui():
                     with gr.Column(scale=1):
                         gr.Markdown("### Judge Prompt Template")
                         judge_prompt_template_input = gr.Textbox(
-                            label="Judge (see code for details)",
+                            label="Template for Judge (see code/docs for available placeholders)",
                             value=default_judge_prompt,
                             lines=15,
                             show_copy_button=True
@@ -2154,10 +2213,10 @@ def create_ui():
         # Define the single, complete run event listener
         run_event = run_button.click(
             fn=run_test_from_ui,
-            inputs=[ # Same inputs as before (list omitted for brevity)
-                champ_name, champ_api_url, champ_model_id, champ_temp, champ_max_tokens,
-                chall_name, chall_api_url, chall_model_id, chall_temp, chall_max_tokens,
-                judge_name, judge_api_url, judge_model_id, judge_temp, judge_max_tokens,
+            inputs=[ # Add the new dropdown inputs
+                champ_name, champ_api_url, champ_model_id, champ_temp, champ_max_tokens, champ_file_upload_method,
+                chall_name, chall_api_url, chall_model_id, chall_temp, chall_max_tokens, chall_file_upload_method,
+                judge_name, judge_api_url, judge_model_id, judge_temp, judge_max_tokens, judge_file_upload_method,
                 api_key_input,
                 model_prompt_template_input,
                 judge_prompt_template_input,
@@ -2413,4 +2472,3 @@ if __name__ == "__main__":
         # Now that we are confirmed to be in the venv, execute the main logic
         main()
     # If ensure_venv() returned False (or exited), the script either failed or restarted itself.
-
