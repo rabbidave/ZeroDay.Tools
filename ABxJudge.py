@@ -2024,10 +2024,11 @@ def create_ui():
     """
 
     with gr.Blocks(css=css, theme=gr.themes.Soft()) as iface:
-        gr.Markdown("# Model A/B Testing & Evaluation Tool")
+        gr.Markdown("# A/B x Judge: AI Testing & Auto-Evaluation")
         gr.Markdown(
-            "Configure champion, challenger, and judge models, provide test data (including optional images), "
-            "and run evaluations to compare model performance."
+            "1) Configure Champion, Challenger, and Judge"
+            "2) Provide Test Data & Reference Input"
+            "3) Run Evaluations & Compare Performance."
         )
         gr.Markdown(
             """**API Key**: Optional. Enter if needed for cloud endpoints (OpenRouter, Anthropic, Gemini, etc.).
