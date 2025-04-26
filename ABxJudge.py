@@ -1036,9 +1036,8 @@ class ModelTester:
         for i in range(0, num_cases, batch_size):
             if STOP_REQUESTED:
                 logger.warning(f"Stop requested. Finishing early after processing {processed_case_count} cases.")
-                if progress: progress(processed_case_count / num_cases, f"Stopping early after {processed_case_count} cases...")
+                if progress is not None: progress(processed_case_count / num_cases, f"Stopping early after {processed_case_count} cases...")
                 break
-
             current_batch = test_cases[i:min(i + batch_size, num_cases)]
             batch_num = i // batch_size + 1
             logger.info(f"--- Processing Batch {batch_num}/{total_batches} (Cases {i+1}-{min(i+batch_size, num_cases)}) ---")
@@ -1051,7 +1050,7 @@ class ModelTester:
                 if retry_count > 0:
                     delay = min(batch_backoff_factor ** (retry_count - 1), batch_max_wait)
                     logger.info(f"Retrying batch {batch_num} (attempt {retry_count}/{batch_retry_attempts}) after {delay:.2f}s delay")
-                    if progress: progress(processed_case_count / num_cases, f"Retrying Batch {batch_num} ({retry_count}/{batch_retry_attempts})")
+                    if progress is not None: progress(processed_case_count / num_cases, f"Retrying Batch {batch_num} ({retry_count}/{batch_retry_attempts})")
                     time.sleep(delay)
                 elif progress is not None:
                     progress(processed_case_count / num_cases, f"Running Batch {batch_num}/{total_batches}")
@@ -1107,8 +1106,7 @@ class ModelTester:
                 if STOP_REQUESTED: break # Break outer generation loop
 
                 # --- 2. Evaluate pairs for each case in the batch ---
-                if progress: progress((processed_case_count + len(current_batch) * 0.5) / num_cases, f"Evaluating Pairs for Batch {batch_num}")
-
+                if progress is not None: progress((processed_case_count + len(current_batch) * 0.5) / num_cases, f"Evaluating Pairs for Batch {batch_num}")
                 for test_case in current_batch:
                     if STOP_REQUESTED: break
                     case_id = test_case.id
@@ -1289,7 +1287,7 @@ class ModelTester:
             "judge_performance_metrics": final_judge_metrics,
         }
 
-        if progress:
+        if progress is not None:
             final_status = "Testing completed" if not STOP_REQUESTED else "Testing stopped early"
             progress(1.0, final_status)
 
