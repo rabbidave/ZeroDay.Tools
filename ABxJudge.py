@@ -1,9 +1,21 @@
 import sys
 import os
-import venv
 import subprocess
 import signal # Added for CLI stop handling
 import itertools # Added for pairwise combinations
+from pathlib import Path
+import shutil
+
+# --- Standard Library Imports (Safe to be global) ---
+import json
+import logging
+import time
+import re
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Tuple, Union
+from urllib.parse import urlparse
+import base64
+import mimetypes
 
 # --- Venv Setup ---
 # Determine if we need to set up or reactivate the virtual environment
@@ -16,230 +28,227 @@ REQUIRED_PACKAGES = [
     "tenacity",
     "Pillow", # For image handling (needed for dummy image in CLI test)
     "python-dotenv", # Added for easy API key management in CLI
-    "numpy" # Added for potential aggregation/matrix operations
+    "numpy", # Added for potential aggregation/matrix operations
+    "tqdm", # For CLI progress bars
+    "llama-cpp-python" # For local server, if used
 ]
 
-def ensure_venv():
-    """Checks for venv, creates/installs if needed, and re-executes if not active."""
-    venv_path = os.path.abspath(VENV_DIR)
-    is_in_venv = sys.prefix != sys.base_prefix and sys.prefix == venv_path # More robust check
-    venv_exists = os.path.isdir(venv_path)
+# Configure logging early so it can be used by the setup function
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+logger = logging.getLogger("abx_judge_tool")
+
+def ensure_environment_with_uv():
+    """
+    Ensures a virtual environment exists and has dependencies installed using uv.
+    If uv is not found, it attempts to install it.
+    If the script is not running in the venv, it re-executes itself within it.
+    """
+    try:
+        import gradio, pandas, requests, tenacity, PIL, dotenv, numpy, tqdm
+        return True # Dependencies are already present
+    except ImportError:
+        logger.info("One or more dependencies are missing, proceeding with uv setup.")
+
+    venv_path = Path(__file__).parent.resolve() / VENV_DIR
+    # Use os.path.realpath to handle symlinks correctly
+    is_in_venv = os.path.realpath(sys.prefix) == os.path.realpath(str(venv_path))
 
     if is_in_venv:
-        print(f"Running inside the '{VENV_DIR}' virtual environment.")
         return True
 
-    print(f"Not running inside the target '{VENV_DIR}' virtual environment.")
+    logger.info("--- Environment Setup: Bootstrapping with uv ---")
 
-    if not venv_exists:
-        print(f"Creating virtual environment in '{venv_path}'...")
+    uv_executable = shutil.which("uv")
+    if not uv_executable:
+        logger.warning("`uv` not found in PATH. Attempting to install it with pip...")
         try:
-            venv.create(venv_path, with_pip=True)
-            print("Virtual environment created successfully.")
-        except Exception as e:
-            print(f"Error creating virtual environment: {e}", file=sys.stderr)
+            subprocess.run([sys.executable, "-m", "pip", "install", "uv"], check=True, capture_output=True, text=True)
+            uv_executable = shutil.which("uv")
+            if not uv_executable:
+                raise RuntimeError("`uv` was not found in PATH after pip install.")
+            logger.info(f"Using `uv` installed at: {uv_executable}")
+        except (subprocess.CalledProcessError, RuntimeError) as e:
+            logger.error(f"Failed to automatically install `uv`. Please install it manually: `pip install uv`")
+            logger.error(f"Error details: {e}")
             sys.exit(1)
 
-    if sys.platform == "win32":
-        python_executable = os.path.join(venv_path, "Scripts", "python.exe")
-        pip_executable = os.path.join(venv_path, "Scripts", "pip.exe")
-    else:
-        python_executable = os.path.join(venv_path, "bin", "python")
-        pip_executable = os.path.join(venv_path, "bin", "pip")
+    python_in_venv = venv_path / "bin" / "python" if sys.platform != "win32" else venv_path / "Scripts" / "python.exe"
+    if not venv_path.exists():
+        logger.info(f"Creating virtual environment with `uv` at: {venv_path}")
+        subprocess.run([uv_executable, "venv", str(venv_path), "--python", sys.executable], check=True, capture_output=True, text=True)
 
-    if not os.path.exists(python_executable):
-        print(f"Error: Python executable not found at '{python_executable}'. Venv creation might have failed.", file=sys.stderr)
-        sys.exit(1)
-    if not os.path.exists(pip_executable):
-        print(f"Error: Pip executable not found at '{pip_executable}'. Venv creation might have failed.", file=sys.stderr)
-        sys.exit(1)
-
-    print(f"Installing/checking required packages in '{venv_path}'...")
-    install_command = [pip_executable, "install"] + REQUIRED_PACKAGES
+    logger.info(f"Installing dependencies into '{venv_path}' with `uv pip install`...")
+    install_command = [uv_executable, "pip", "install", "-p", str(python_in_venv)] + REQUIRED_PACKAGES
     try:
-        result = subprocess.run(install_command, check=True, capture_output=True, text=True, encoding='utf-8')
-        print("Packages installed/verified successfully.")
-        if result.stderr:
-            print("--- pip stderr ---\n", result.stderr, "\n--- end pip stderr ---")
-    except subprocess.CalledProcessError as e:
-        print(f"Error installing packages using command: {' '.join(e.cmd)}", file=sys.stderr)
-        print(f"Pip stdout:\n{e.stdout}", file=sys.stderr)
-        print(f"Pip stderr:\n{e.stderr}", file=sys.stderr)
-        sys.exit(1)
-    except Exception as e:
-        print(f"An unexpected error occurred during package installation: {e}", file=sys.stderr)
+        process = subprocess.Popen(install_command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', bufsize=1)
+        for line in iter(process.stdout.readline, ''):
+            logger.info(f"[uv pip install]: {line.strip()}")
+        process.stdout.close()
+        return_code = process.wait()
+        if return_code != 0:
+             raise subprocess.CalledProcessError(return_code, install_command)
+        logger.info("All dependencies installed successfully.")
+    except (subprocess.CalledProcessError, Exception) as e:
+        logger.error(f"Failed to install dependencies with `uv`: {e}")
         sys.exit(1)
 
-    print(f"\nRestarting script using Python from '{venv_path}'...\n{'='*20}\n")
-    script_path = os.path.abspath(__file__)
-    logger.info(f"Attempting os.execv with executable: '{python_executable}' and script: '{script_path}'")
+    logger.info(f"Restarting script inside the '{VENV_DIR}' environment...")
     try:
-        os.execv(python_executable, [python_executable, script_path] + sys.argv[1:])
-        # If execv succeeds, this line is never reached.
-    except OSError as e:
-        logger.error(f"os.execv failed: {e}. Executable='{python_executable}', Script='{script_path}'", exc_info=True)
-        logger.info("Attempting restart with subprocess.run as fallback...")
-        restart_command_fallback = [python_executable, script_path] + sys.argv[1:]
-        try:
-            # Use run with check=True, capture output for debugging
-            result = subprocess.run(restart_command_fallback, check=True, capture_output=True, text=True)
-            logger.info("Subprocess fallback completed. Stdout:\n" + result.stdout)
-            logger.info("Subprocess fallback completed. Stderr:\n" + result.stderr)
-            # If the subprocess runs and exits, the original script should exit too.
-            sys.exit(0) # Exit cleanly after the subprocess finishes
-        except subprocess.CalledProcessError as sub_e:
-            logger.error(f"Subprocess fallback failed with exit code {sub_e.returncode}. Command: {sub_e.cmd}", exc_info=True)
-            logger.error(f"Subprocess stdout:\n{sub_e.stdout}")
-            logger.error(f"Subprocess stderr:\n{sub_e.stderr}")
-            sys.exit(1)
-        except Exception as sub_e:
-            logger.error(f"Subprocess fallback failed with unexpected error: {sub_e}", exc_info=True)
-            sys.exit(1)
+        os.execv(str(python_in_venv), [str(python_in_venv), __file__] + sys.argv[1:])
     except Exception as e:
-        logger.error(f"Unexpected error during script restart attempt: {e}", exc_info=True)
+        logger.error(f"FATAL: Failed to re-execute script in virtual environment: {e}")
         sys.exit(1)
+    return False  # Properly indented under function scope
 
-    return False # Should not be reached if restart works
-
-# --- Original Script Imports (ensure they are accessible after venv check) ---
+# --- Dependency-based Imports (for after venv is ensured) ---
 import gradio as gr
-import json
-import logging
-import time
 import pandas as pd
-# import os # Already imported above
-import re
+import numpy as np
 import requests
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple, Union
 from tenacity import retry, stop_after_attempt, wait_exponential
+from PIL import Image, ImageDraw
+from tqdm.auto import tqdm
+from collections import Counter
+import tempfile
 import csv
 import io
-import tempfile # Added for JSONL download
-from urllib.parse import urlparse
-import base64
-import mimetypes
-import numpy as np # Added for matrix operations
-# import signal # Already imported above
-# import itertools # Already imported above
+import argparse
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-)
-logger = logging.getLogger("model_tester_nway")
+# ==============================================================================
+# Data Structures
+# ==============================================================================
 
 @dataclass
 class ModelEndpoint:
-    """Simple model endpoint configuration."""
+    """Configuration for a single model API endpoint."""
     name: str
     api_url: str
-    api_key: Optional[str] # API key can be optional (e.g., for local Ollama)
+    api_key: Optional[str]
     model_id: str
     max_tokens: int = 1024
     temperature: float = 0.0
-    file_upload_method: str = "JSON (Embedded Data)" # Options: "JSON (Embedded Data)", "Multipart Form Data"
-    # Add an is_active flag for UI control
-    is_active: bool = True # Added: Mark if this endpoint should be used in the test
-
-    def to_dict(self):
-        """Convert to dictionary."""
-        return {
-            "name": self.name,
-            "api_url": self.api_url,
-            "model_id": self.model_id,
-            "max_tokens": self.max_tokens,
-            "temperature": self.temperature,
-            "file_upload_method": self.file_upload_method,
-            "is_active": self.is_active,
-        }
+    file_upload_method: str = "JSON (Embedded Data)"
+    is_active: bool = True
 
 @dataclass
 class TestCase:
-    """Test case containing a key to query and actual value for evaluation."""
-    key: str # The input/prompt for the model
-    value: str # The reference value/ground truth
-    image_path_or_url: Optional[str] = None # Path or URL to an image for multimodal input
-    id: Optional[str] = None # Unique ID for the test case
+    """A single test case from the input corpus."""
+    key: str
+    value: str
+    image_path_or_url: Optional[str] = None
+    id: Optional[str] = None
 
 @dataclass
 class ModelResponse:
-    """Model response for a test case."""
+    """The output from a model for a single test case."""
     test_id: str
-    model_name: str # Name of the model endpoint that generated this
+    model_name: str
     output: str
     latency: float
-    is_error: bool = False # Flag if generation failed critically
+    is_error: bool = False
 
 @dataclass
 class EvaluationResult:
-    """Evaluation result from the LM judge FOR A PAIRWISE COMPARISON."""
+    """The result of a single pairwise evaluation by the judge model."""
     test_id: str
-    model_a_name: str # Name of the first model in the pair
-    model_b_name: str # Name of the second model in the pair
-    model_a_output: str # Output of model A for this test case
-    model_b_output: str # Output of model B for this test case
-    winner: str # "MODEL_A_WINS", "MODEL_B_WINS", "TIE", "UNDETERMINED", "JUDGE_ERROR" (MODEL_A_WINS means model_a won against model_b)
-    confidence: float # Extracted confidence score (e.g., 4/5 -> 0.8)
-    reasoning: str # Full response from the judge model
+    model_a_name: str
+    model_b_name: str
+    model_a_output: str
+    model_b_output: str
+    winner: str
+    confidence: float
+    reasoning: str
 
-# Global preprocessing settings (can be updated through UI)
-PREPROCESS_ENABLED = True
-MAX_LENGTH = 8000
-REMOVE_SPECIAL_CHARS = True
-NORMALIZE_WHITESPACE = True
-
-# CSV preprocessing settings (specific to CSV format)
-DETECT_DELIMITER = True
-FIX_QUOTES = True
-REMOVE_CONTROL_CHARS = True
-NORMALIZE_NEWLINES = True
-SKIP_BAD_LINES = True
-SHOW_SAMPLE = True # Show sample data after loading & preprocessing
-
-# Global flag to signal stopping the test run
+# Global flag to signal stopping the test run from the UI or Ctrl+C
 STOP_REQUESTED = False
 
-# --- Text Preprocessing Function ---
-def preprocess_text(text, max_length=None, remove_special_chars=None, normalize_whitespace=None):
-    """
-    Preprocess text (key or value) before using in prompts or comparisons.
-    - Truncate to prevent token limits
-    - Remove problematic characters
-    - Normalize whitespace
-    """
-    if max_length is None: max_length = MAX_LENGTH
-    if remove_special_chars is None: remove_special_chars = REMOVE_SPECIAL_CHARS
-    if normalize_whitespace is None: normalize_whitespace = NORMALIZE_WHITESPACE
-    if not PREPROCESS_ENABLED: return str(text) if text is not None else ""
+# ==============================================================================
+# Core Logic: Analysis, API Communication, and Evaluation
+# ==============================================================================
+
+def preprocess_text(text: str, max_length: int = 8000) -> str:
+    """Cleans and truncates text for safe processing."""
     if text is None: return ""
     text = str(text)
-    if len(text) > max_length: text = text[:max_length] + "... [truncated]"
-    if remove_special_chars:
-        text = re.sub(r'[\x00-\x1F\x7F-\x9F]', '', text)
-        text = re.sub(r'<[^>]+>', '', text)
-    if normalize_whitespace:
-        text = re.sub(r'\s+', ' ', text)
-        text = text.strip()
+    if max_length and len(text) > max_length: text = text[:max_length] + "... [truncated]"
+    # Remove control characters and HTML tags
+    text = re.sub(r'[\x00-\x1F\x7F-\x9F]', '', text)
+    text = re.sub(r'<[^>]+>', '', text)
+    # Normalize whitespace
+    text = re.sub(r'\s+', ' ', text).strip()
     return text
 
-# --- Model Runner Class (Largely unchanged, but tracks temp files slightly differently) ---
+
+def generate_ngrams(text: str, n: int) -> List[str]:
+    """Generates a list of n-grams from a given text."""
+    if not isinstance(text, str) or not text.strip(): return []
+    # Simple tokenization: lowercase, remove punctuation, split by space.
+    text = text.lower()
+    text = re.sub(r'[^a-z0-9\s]', '', text)
+    words = text.split()
+    if len(words) < n: return []
+    ngrams = zip(*[words[i:] for i in range(n)])
+    return [" ".join(ngram) for ngram in ngrams]
+
+def run_post_processing_analysis(results_json: Dict, enable_ngram: bool, n_val: int, top_k: int) -> Dict:
+    """
+    Performs post-hoc analysis on the results, like n-gram frequency.
+    # --- CLARIFICATION: This function modifies the results_json dictionary in-place for efficiency.
+    """
+    if not enable_ngram or "summary" not in results_json:
+        return results_json
+
+    logger.info(f"Running n-gram analysis (n={n_val}, top_k={top_k})...")
+    summary = results_json["summary"]
+    model_names = summary.get("model_names", [])
+    if not model_names:
+        return results_json
+
+    ngram_counters = {name: Counter() for name in model_names}
+    seen_outputs = set()
+
+    # --- CLARIFICATION:
+    # We iterate through the 'evaluations' (pairwise results) but need to count each model's
+    # output for a given test case only once. `seen_outputs` tracks `test_id-model_name`
+    # pairs to prevent double-counting when a model appears in multiple pairs (e.g., A vs B, A vs C).
+    for eval_item in results_json.get("evaluations", []):
+        for model_key, output_key in [("model_a_name", "model_a_output"), ("model_b_name", "model_b_output")]:
+            model_name = eval_item.get(model_key)
+            output_id = f"{eval_item.get('test_id')}-{model_name}"
+            if model_name in ngram_counters and eval_item.get(output_key) and output_id not in seen_outputs:
+                ngrams = generate_ngrams(eval_item[output_key], n_val)
+                ngram_counters[model_name].update(ngrams)
+                seen_outputs.add(output_id)
+
+    analysis_results = {
+        "ngram_frequency": {
+            "n_value": n_val,
+            "top_k_reported": top_k,
+            "results_by_model": {
+                name: {"most_frequent": [{"ngram": item, "count": count} for item, count in counts.most_common(top_k)]}
+                for name, counts in ngram_counters.items()
+            }
+        }
+    }
+
+    summary["post_processing_analysis"] = analysis_results
+    results_json["summary"] = summary
+    return results_json
+
+
 class ModelRunner:
-    """Handles model API calls."""
+    """Handles all API communication for a single model endpoint."""
     def __init__(self, endpoint: ModelEndpoint, prompt_template: str):
         self.endpoint = endpoint
         self.prompt_template = prompt_template
-        self._temp_files: List[str] = [] # Instance variable for tracking temp files
+        self._temp_files: List[str] = []
 
-    # ... (Methods _load_and_encode_file, _prepare_base64_data, _prepare_local_file_path remain mostly the same) ...
     def _load_and_encode_file(self, file_path_or_url: str) -> Tuple[Optional[str], Optional[str]]:
-        """Loads file from path/URL, base64 encodes it, and returns (base64_string, mime_type) or (None, None)."""
+        """Loads a file from a local path or URL and returns its base64-encoded string and MIME type."""
         try:
-            file_bytes = None
             if urlparse(file_path_or_url).scheme in ['http', 'https']:
                 logger.info(f"Downloading file from URL: {file_path_or_url} for model {self.endpoint.name}")
-                response = requests.get(file_path_or_url, stream=True, timeout=30) # Increased timeout
+                response = requests.get(file_path_or_url, stream=True, timeout=30)
                 response.raise_for_status()
                 file_bytes = response.content
                 mime_type = response.headers.get('content-type')
@@ -254,342 +263,172 @@ class ModelRunner:
             if not file_bytes: raise ValueError("Failed to load file bytes.")
             mime_type = mime_type or 'application/octet-stream'
             base64_data = base64.b64encode(file_bytes).decode('utf-8')
-            logger.info(f"Successfully loaded and encoded file from {file_path_or_url[:50]}... Type: {mime_type}, Size: {len(base64_data)} chars base64 for model {self.endpoint.name}")
             return base64_data, mime_type
-        except FileNotFoundError:
-            logger.error(f"File not found: {file_path_or_url} for model {self.endpoint.name}")
-            return None, None
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Failed to download file from URL {file_path_or_url} for model {self.endpoint.name}: {e}")
-            return None, None
         except Exception as e:
             logger.error(f"Failed to load or encode file {file_path_or_url} for model {self.endpoint.name}: {e}")
             return None, None
 
     def _prepare_local_file_path(self, file_path_or_url: str) -> Optional[str]:
-        """
-        Ensures a local file path exists for the given input. Downloads URLs.
-        Returns the local path or None on error. Tracks temp files for cleanup.
-        """
+        """Ensures a local file path exists, downloading from a URL if necessary. Used for multipart uploads."""
         try:
             parsed_url = urlparse(file_path_or_url)
             if parsed_url.scheme in ['http', 'https']:
-                logger.info(f"Downloading URL for multipart upload: {file_path_or_url} for model {self.endpoint.name}")
-                response = requests.get(file_path_or_url, stream=True, timeout=60) # Increased timeout
+                response = requests.get(file_path_or_url, stream=True, timeout=60)
                 response.raise_for_status()
                 suffix = os.path.splitext(parsed_url.path)[1]
-                # Use a process-specific temporary directory if possible
-                # temp_dir = tempfile.mkdtemp() # Consider this for better isolation if issues arise
-                temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=suffix) # Keep file after close
+                # Create a temporary file that is not deleted on close, so we can get its path.
+                temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
                 with temp_file:
                     for chunk in response.iter_content(chunk_size=8192):
                         temp_file.write(chunk)
                 local_path = temp_file.name
-                logger.info(f"Downloaded URL to temporary file: {local_path} for model {self.endpoint.name}")
-                self._temp_files.append(local_path) # Track the file
+                self._temp_files.append(local_path) # Track for later cleanup.
                 return local_path
             else:
-                if os.path.exists(file_path_or_url):
-                    logger.info(f"Using existing local file path for multipart: {file_path_or_url} for model {self.endpoint.name}")
-                    return file_path_or_url
-                else:
-                    logger.error(f"Local file path not found: {file_path_or_url} for model {self.endpoint.name}")
-                    return None
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Failed to download URL {file_path_or_url} for multipart for model {self.endpoint.name}: {e}")
-            return None
+                return file_path_or_url if os.path.exists(file_path_or_url) else None
         except Exception as e:
             logger.error(f"Error preparing local file path {file_path_or_url} for model {self.endpoint.name}: {e}")
             return None
 
     def _cleanup_temp_files(self):
-        """Removes any temporary files created BY THIS RUNNER INSTANCE."""
-        if hasattr(self, '_temp_files') and self._temp_files:
-            logger.info(f"Cleaning up {len(self._temp_files)} temporary files for model {self.endpoint.name}")
-            for temp_path in self._temp_files:
-                try:
-                    if os.path.exists(temp_path):
-                        os.remove(temp_path)
-                        logger.debug(f"Cleaned up temporary file: {temp_path}")
-                    else:
-                        logger.debug(f"Temporary file already removed: {temp_path}")
-                except OSError as e:
-                    logger.warning(f"Failed to clean up temporary file {temp_path}: {e}")
-            self._temp_files = [] # Reset the list for this runner
-
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=2, max=10),
-    )
-    def generate(
-        self,
-        test_case: TestCase,
-        # Removed pre-loaded data args, simplification
-    ) -> ModelResponse:
-        """Call the model API with the test case."""
-        start_time = time.time()
-        base64_data_loaded = None
-        mime_type_loaded = None
-        local_file_path_for_multipart = None
-        is_error_flag = False
-        error_message = ""
-
-        logger.info(f"Generating response for model '{self.endpoint.name}', test_id: {test_case.id}")
-        try:
-            upload_method = self.endpoint.file_upload_method
-            preprocessed_key = preprocess_text(test_case.key)
-
-            # Format prompt
-            prompt = ""
+        """Removes any temporary files created by this runner instance during a test run."""
+        for temp_path in self._temp_files:
             try:
-                # Judge prompts (now identified by `judge-` prefix)
-                if test_case.id and str(test_case.id).startswith("judge-"):
-                    prompt = preprocessed_key
-                else:
-                    safe_key = preprocessed_key.replace("{", "{{").replace("}", "}}")
-                    prompt = self.prompt_template.replace("{key}", safe_key)
-            except Exception as e:
-                logger.warning(f"Error formatting prompt template with replace for {self.endpoint.name}: {str(e)}. Falling back.")
-                try:
-                    prompt = self.prompt_template.format(key=preprocessed_key)
-                except Exception as e2:
-                    logger.error(f"Error formatting prompt template for {self.endpoint.name}: {str(e2)}. Using concatenation.")
-                    prompt = f"{self.prompt_template}\n\nINPUT: {preprocessed_key}"
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+            except OSError as e:
+                logger.warning(f"Failed to clean up temporary file {temp_path}: {e}")
+        self._temp_files = []
 
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+    def generate(self, test_case: TestCase) -> ModelResponse:
+        """
+        Generates a model response for a given test case, handling file uploads and API logic.
+        Wrapped in a retry decorator to handle transient network issues.
+        """
+        start_time = time.time()
+        is_error = False
+        response_text = ""
+        try:
+            prompt = self.prompt_template.format(key=preprocess_text(test_case.key))
+            base64_data, mime_type, local_file_path = None, None, None
 
-            # --- File Handling ---
             if test_case.image_path_or_url:
-                logger.info(f"Test case {test_case.id} includes file ref: {test_case.image_path_or_url}. Method: '{upload_method}' for model {self.endpoint.name}.")
-                if upload_method == "JSON (Embedded Data)":
-                    base64_data_loaded, mime_type_loaded = self._load_and_encode_file(test_case.image_path_or_url)
-                    if base64_data_loaded is None:
-                        error_message = f"Error: Failed to load file {test_case.image_path_or_url} for JSON method (model: {self.endpoint.name})"
-                        is_error_flag = True
-                elif upload_method == "Multipart Form Data":
-                    local_file_path_for_multipart = self._prepare_local_file_path(test_case.image_path_or_url)
-                    if local_file_path_for_multipart is None:
-                        error_message = f"Error: Failed to prepare file {test_case.image_path_or_url} for Multipart method (model: {self.endpoint.name})"
-                        is_error_flag = True
-                else:
-                    error_message = f"Error: Invalid file_upload_method '{upload_method}' for model {self.endpoint.name}"
-                    is_error_flag = True
-
-            # --- API Call ---
-            response_text = ""
-            if not is_error_flag: # Proceed only if file handling (if any) was successful
+                if self.endpoint.file_upload_method == "JSON (Embedded Data)":
+                    base64_data, mime_type = self._load_and_encode_file(test_case.image_path_or_url)
+                    if not base64_data: is_error, response_text = True, f"Error: Failed to load/encode file for JSON method."
+                elif self.endpoint.file_upload_method == "Multipart Form Data":
+                    local_file_path = self._prepare_local_file_path(test_case.image_path_or_url)
+                    if not local_file_path: is_error, response_text = True, f"Error: Failed to prepare file for Multipart method."
+            
+            if not is_error:
                 try:
-                    if upload_method == "JSON (Embedded Data)":
-                        response_text = self._call_json_api(prompt, base64_data_loaded, mime_type_loaded)
-                    elif upload_method == "Multipart Form Data":
-                        response_text = self._call_multipart_api(prompt, local_file_path_for_multipart)
-                    else: # Should have been caught, defensive
-                        response_text = f"Error: Invalid file upload method '{upload_method}'."
-                        is_error_flag = True
+                    if self.endpoint.file_upload_method == "JSON (Embedded Data)":
+                        response_text = self._call_json_api(prompt, base64_data, mime_type)
+                    else: # Multipart Form Data
+                        response_text = self._call_multipart_api(prompt, local_file_path)
+                except Exception as api_err:
+                    is_error, response_text = True, f"Error: API call failed. Details: {str(api_err)}"
+                    raise # Re-raise to trigger tenacity retry
 
-                except requests.exceptions.RequestException as req_err:
-                    logger.error(f"API request failed for {self.endpoint.name} (Test ID {test_case.id}): {req_err}")
-                    if hasattr(req_err, 'response') and req_err.response is not None: logger.error(f"Response status: {req_err.response.status_code}, Response text: {req_err.response.text[:500]}")
-                    response_text = f"Error: API request failed. Details: {str(req_err)}"
-                    is_error_flag = True
-                except (KeyError, IndexError, TypeError, json.JSONDecodeError, ValueError) as parse_err:
-                    logger.error(f"Failed to parse response or invalid response structure from {self.endpoint.name} (Test ID {test_case.id}): {parse_err}")
-                    response_text = f"Error: Failed to parse API response. Details: {str(parse_err)}"
-                    is_error_flag = True
-                except Exception as e:
-                    logger.error(f"Unexpected error calling API for {self.endpoint.name} (Test ID {test_case.id}): {str(e)}", exc_info=True)
-                    response_text = f"Error: An unexpected error occurred. Details: {str(e)}"
-                    is_error_flag = True
-            else: # Use the file handling error message
-                response_text = error_message
-
-            end_time = time.time()
-
-            # Cleanup happens in the finally block
-
-            return ModelResponse(
-                test_id=str(test_case.id or "unknown"),
-                model_name=self.endpoint.name,
-                output=str(response_text),
-                latency=end_time - start_time,
-                is_error=is_error_flag # Set error flag
-            )
         except Exception as e:
-            # Catch errors before return to ensure cleanup and re-raise for tenacity
-            logger.error(f"Critical error in generate method for {self.endpoint.name} (Test ID {test_case.id}): {str(e)}", exc_info=True)
-            raise # Re-raise to trigger tenacity retry
+            is_error, response_text = True, f"Error: Generation failed critically. Details: {str(e)}"
+            logger.error(f"Critical failure in generate for {self.endpoint.name}: {e}", exc_info=True)
         finally:
-            # Ensure cleanup happens regardless of success/failure/retry
             self._cleanup_temp_files()
 
+        return ModelResponse(
+            test_id=str(test_case.id), model_name=self.endpoint.name,
+            output=str(response_text), latency=time.time() - start_time, is_error=is_error
+        )
 
-    # ... (_prepare_headers, _call_json_api, _call_multipart_api, _format_*_json methods remain mostly the same) ...
-    # Minor change: Pass model name to logs within these helpers for better context.
     def _prepare_headers(self, is_json_request=True):
-        """Prepares common headers."""
+        """Prepares HTTP headers for the API request."""
         headers = {}
-        api_key = self.endpoint.api_key
-        api_url_lower = self.endpoint.api_url.lower() if self.endpoint.api_url else ""
-
-        if api_key and api_key.strip():
-            if "anthropic" in api_url_lower:
-                headers["x-api-key"] = api_key
-                headers["anthropic-version"] = "2023-06-01"
-            elif "generativelanguage.googleapis.com" not in api_url_lower: # Gemini key in URL
-                headers["Authorization"] = f"Bearer {api_key}"
-
-        if is_json_request:
-            headers["Content-Type"] = "application/json"
-
-        if "openrouter.ai" in api_url_lower:
+        if self.endpoint.api_key: headers["Authorization"] = f"Bearer {self.endpoint.api_key}"
+        if is_json_request: headers["Content-Type"] = "application/json"
+        if "openrouter.ai" in self.endpoint.api_url:
             headers["HTTP-Referer"] = "http://localhost"
-            headers["X-Title"] = "Model N-Way Testing Tool"
+            headers["X-Title"] = "ABxJudge Tool"
         return headers
 
     def _call_json_api(self, prompt: str, base64_data: Optional[str], mime_type: Optional[str]) -> str:
-        """Wrapper for JSON-based API calls."""
-        logger.info(f"Executing JSON API call for endpoint: {self.endpoint.name}")
+        """Makes a POST request to a JSON-based API (e.g., OpenAI, Anthropic, Ollama)."""
         headers = self._prepare_headers(is_json_request=True)
-        api_url_lower = self.endpoint.api_url.lower() if self.endpoint.api_url else ""
-        # Type detection logic... (same as before)
-        is_openai_compatible = "/v1/chat/completions" in api_url_lower or any(s in api_url_lower for s in ["openai", "openrouter.ai", "mistral", "together.ai", "groq.com", "fireworks.ai", "deepinfra.com", "lmstudio.ai", ":1234/v1"])
-        is_anthropic_compatible = "/v1/messages" in api_url_lower or "anthropic" in api_url_lower
-        is_gemini = "generativelanguage.googleapis.com" in api_url_lower
-        is_ollama = ("/api/generate" in api_url_lower and ("localhost:11434" in api_url_lower or "127.0.0.1:11434" in api_url_lower)) or ("ollama" in api_url_lower and "/api/generate" in api_url_lower)
+        api_url_lower = self.endpoint.api_url.lower()
 
-        payload = {}
-        api_url_to_call = self.endpoint.api_url
-        model_name = self.endpoint.name # For logging
+        # --- CLARIFICATION:
+        # This block dynamically determines the correct JSON payload structure by inspecting the API URL.
+        # This is what makes the tool "endpoint-agnostic" for major API standards.
+        if "/v1/chat/completions" in api_url_lower or "openrouter.ai" in api_url_lower:
+            payload = self._format_openai_json(prompt, base64_data, mime_type)
+        elif "anthropic" in api_url_lower:
+            payload = self._format_anthropic_json(prompt, base64_data, mime_type)
+        elif "generativelanguage.googleapis.com" in api_url_lower:
+            payload = self._format_gemini_json(prompt, base64_data, mime_type)
+        elif "/api/generate" in api_url_lower: # Ollama-specific endpoint
+            payload = self._format_ollama_json(prompt, base64_data)
+        else:
+            logger.warning(f"Unknown API type for {self.endpoint.name}. Defaulting to OpenAI format.")
+            payload = self._format_openai_json(prompt, base64_data, mime_type)
 
-        try:
-            # Call appropriate formatting function
-            if is_openai_compatible: payload = self._format_openai_json(prompt, base64_data, mime_type)
-            elif is_anthropic_compatible: payload = self._format_anthropic_json(prompt, base64_data, mime_type)
-            elif is_gemini:
-                payload = self._format_gemini_json(prompt, base64_data, mime_type)
-                if self.endpoint.api_key: api_url_to_call = f"{self.endpoint.api_url}?key={self.endpoint.api_key}"
-                else: raise ValueError(f"Gemini API key is required but not provided for model {model_name}.")
-            elif is_ollama: payload = self._format_ollama_json(prompt, base64_data)
-            else:
-                logger.warning(f"Could not determine specific JSON API type for {self.endpoint.api_url} ({model_name}). Using generic fallback.")
-                # Needs a generic implementation or assumption (e.g., assume OpenAI text-only)
-                # For now, let's assume it might follow OpenAI structure as a best guess fallback
-                logger.warning(f"Fallback: Assuming OpenAI-like structure for {model_name}.")
-                payload = self._format_openai_json(prompt, None, None) # Assume text-only for generic
-
-            # Make request
-            payload_size_kb = len(json.dumps(payload)) / 1024
-            logger.info(f"Sending JSON request to {api_url_to_call} for model {model_name}. Payload size: {payload_size_kb:.2f} KB")
-            if payload_size_kb > 4000: logger.warning(f"Payload size ({payload_size_kb:.2f} KB) is large for model {model_name}.")
-
-            response = requests.post(api_url_to_call, headers=headers, json=payload, timeout=180)
-            response.raise_for_status()
-            result = response.json()
-
-            # Parse response based on API type
-            if is_openai_compatible or (not any([is_anthropic_compatible, is_gemini, is_ollama])): # Include fallback case here
-                if not result.get("choices") or not result["choices"][0].get("message"): raise ValueError(f"Invalid OpenAI-like response format for {model_name}")
-                content = result["choices"][0]["message"].get("content")
-                return content if content is not None else f"Error: Response content was null (Finish Reason: {result['choices'][0].get('finish_reason')})"
-            elif is_anthropic_compatible:
-                if not result.get("content"): raise ValueError(f"Invalid Anthropic response format for {model_name}")
-                text_content = next((block.get("text", "") for block in result.get("content", []) if block.get("type") == "text"), "")
-                return text_content if text_content else "[No text content found in response]"
-            elif is_gemini:
-                if not result.get("candidates"): raise ValueError(f"Invalid Gemini response format for {model_name}")
-                candidate = result["candidates"][0]
-                if not candidate.get("content") or not candidate["content"].get("parts"): raise ValueError(f"Invalid Gemini response format for {model_name}")
-                text_response = "".join(part["text"] for part in candidate["content"]["parts"] if "text" in part)
-                return text_response if text_response else "[No text content found in response]"
-            elif is_ollama:
-                if "response" in result: return result["response"]
-                elif "error" in result: raise ValueError(f"Ollama API Error for {model_name}: {result['error']}")
-                else: raise ValueError(f"Invalid Ollama response format for {model_name}")
-
-        except requests.exceptions.RequestException as e:
-            logger.error(f"JSON API request failed for {model_name}: {str(e)}")
-            if hasattr(e, 'response') and e.response is not None: logger.error(f"Response content: {e.response.text[:500]}")
-            raise # Re-raise
-        except (KeyError, IndexError, ValueError, json.JSONDecodeError) as e:
-            logger.error(f"Failed to parse JSON API response for {model_name}: {str(e)}")
-            logger.error(f"Full response: {result if 'result' in locals() else 'Response not available'}")
-            raise # Re-raise
+        response = requests.post(self.endpoint.api_url, headers=headers, json=payload, timeout=180)
+        response.raise_for_status()
+        result = response.json()
+        
+        # --- CLARIFICATION: This block parses the response based on the same URL detection.
+        if "choices" in result: # OpenAI-like
+            return result["choices"][0]["message"].get("content", "")
+        elif "content" in result and isinstance(result["content"], list): # Anthropic-like
+            return next((block.get("text", "") for block in result["content"] if block.get("type") == "text"), "")
+        elif "candidates" in result: # Gemini-like
+            return result["candidates"][0]["content"]["parts"][0].get("text", "")
+        elif "response" in result: # Ollama-like
+            return result["response"]
+        raise ValueError("Could not parse response from API.")
 
     def _call_multipart_api(self, prompt: str, local_file_path: Optional[str]) -> str:
-        """Handles API calls using multipart/form-data."""
-        model_name = self.endpoint.name
-        logger.info(f"Executing Multipart API call for endpoint: {model_name}")
-        if not local_file_path: return f"Error: No local file path provided for multipart upload for model {model_name}."
-
+        """Makes a POST request using multipart/form-data, typically for file-based models."""
         headers = self._prepare_headers(is_json_request=False)
-        # Example for generic multipart - adjust based on specific API needs
-        data = {'model': self.endpoint.model_id}
-        if prompt: data['prompt'] = prompt
+        data = {'model': self.endpoint.model_id, 'prompt': prompt}
         files = {}
-        result = {} # Define result dict outside try block
-
+        if not local_file_path: return "Error: No file path for multipart upload."
         try:
             with open(local_file_path, 'rb') as f:
-                # Use a generic 'file' key, specific APIs might need 'image', 'audio', etc.
                 files['file'] = (os.path.basename(local_file_path), f)
-                logger.info(f"Preparing multipart request for model {model_name} with file: {os.path.basename(local_file_path)}")
-
                 response = requests.post(self.endpoint.api_url, headers=headers, data=data, files=files, timeout=180)
-                response.raise_for_status()
-                result = response.json() # Assign result here
-
-                # Parse response - HIGHLY API-SPECIFIC
-                # Generic assumption: look for a 'text' or 'transcription' field
-                if 'text' in result: return result['text']
-                if 'transcription' in result: return result['transcription']
-                # Fallback: return the whole JSON response as string if no standard field found
-                logger.warning(f"Could not find 'text' or 'transcription' in multipart response for {model_name}. Returning full JSON.")
-                return json.dumps(result)
-
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Multipart API request failed for {model_name}: {str(e)}")
-            if hasattr(e, 'response') and e.response is not None: logger.error(f"Response content: {e.response.text[:500]}")
-            raise
-        except (KeyError, ValueError, json.JSONDecodeError) as e:
-            logger.error(f"Failed to parse Multipart API response for {model_name}: {str(e)}")
-            logger.error(f"Full response: {result}") # Log the dict captured
-            raise
-        except FileNotFoundError:
-            logger.error(f"File not found for multipart upload for model {model_name}: {local_file_path}")
-            return f"Error: File not found at {local_file_path}"
+            response.raise_for_status()
+            result = response.json()
+            return result.get('text', json.dumps(result)) # Generic parsing
         except Exception as e:
-            logger.error(f"Unexpected error during multipart call for {model_name}: {e}", exc_info=True)
+            logger.error(f"Multipart API request failed for {self.endpoint.name}: {e}")
             raise
 
-    # --- JSON Formatting Functions (_format_openai_json etc.) remain the same ---
-    def _format_openai_json(self, prompt: str, base64_data: Optional[str], mime_type: Optional[str]) -> Dict[str, Any]:
-        """Formats the payload for OpenAI-compatible chat completion APIs."""
-        # logger.debug(f"Formatting payload for OpenAI JSON ({self.endpoint.name})") # Add model name?
-        messages = []
-        content_list: List[Dict] = [{"type": "text", "text": prompt}]
-        if base64_data:
-            mime_type = mime_type or 'image/jpeg' # Default mime type
-            content_list.append({"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{base64_data}"}})
-        messages.append({"role": "user", "content": content_list})
+    # --- API-Specific Payload Formatters ---
 
+    def _format_openai_json(self, prompt: str, base64_data: Optional[str], mime_type: Optional[str]) -> Dict:
+        # --- FIX: Uncommented debug logs for better troubleshooting.
+        logger.debug(f"Formatting payload for OpenAI JSON ({self.endpoint.name})")
+        content_list = [{"type": "text", "text": prompt}]
+        if base64_data:
+            content_list.append({"type": "image_url", "image_url": {"url": f"data:{mime_type or 'image/jpeg'};base64,{base64_data}"}})
         return {
             "model": self.endpoint.model_id,
-            "messages": messages,
+            "messages": [{"role": "user", "content": content_list}],
             "max_tokens": self.endpoint.max_tokens,
             "temperature": self.endpoint.temperature,
         }
 
-    def _format_anthropic_json(self, prompt: str, base64_data: Optional[str], mime_type: Optional[str]) -> Dict[str, Any]:
-        """Formats the payload for Anthropic messages API."""
-        # logger.debug(f"Formatting payload for Anthropic JSON ({self.endpoint.name})")
+    def _format_anthropic_json(self, prompt: str, base64_data: Optional[str], mime_type: Optional[str]) -> Dict:
         content = [{"type": "text", "text": prompt}]
         if base64_data:
-            mime_type = mime_type or 'image/jpeg'
-            supported_mime_types = ['image/jpeg', 'image/png', 'image/gif', 'image/webp']
-            if mime_type not in supported_mime_types:
-                logger.warning(f"MIME type '{mime_type}' may not be directly supported by Claude ({self.endpoint.name}).")
             content.append({
                 "type": "image",
-                "source": {"type": "base64", "media_type": mime_type, "data": base64_data}
+                "source": {
+                    "type": "base64",
+                    "media_type": mime_type or "image/jpeg",
+                    "data": base64_data,
+                },
             })
         return {
             "model": self.endpoint.model_id,
@@ -598,41 +437,28 @@ class ModelRunner:
             "temperature": self.endpoint.temperature,
         }
 
-    def _format_gemini_json(self, prompt: str, base64_data: Optional[str], mime_type: Optional[str]) -> Dict[str, Any]:
-        """Formats the payload for Google Gemini API."""
-        # logger.debug(f"Formatting payload for Gemini JSON ({self.endpoint.name})")
+    def _format_gemini_json(self, prompt: str, base64_data: Optional[str], mime_type: Optional[str]) -> Dict:
         parts = [{"text": prompt}]
         if base64_data:
-            mime_type = mime_type or 'application/octet-stream'
-            parts.append({"inline_data": {"mime_type": mime_type, "data": base64_data}})
+            parts.append({"inline_data": {"mime_type": mime_type or "application/octet-stream", "data": base64_data}})
         return {
             "contents": [{"parts": parts}],
             "generationConfig": {
                 "temperature": self.endpoint.temperature,
                 "maxOutputTokens": self.endpoint.max_tokens,
-            }
+            },
         }
 
-    def _format_ollama_json(self, prompt: str, base64_data: Optional[str]) -> Dict[str, Any]:
-        """Formats the payload for Ollama generate API."""
-        # logger.debug(f"Formatting payload for Ollama JSON ({self.endpoint.name})")
+    def _format_ollama_json(self, prompt: str, base64_data: Optional[str]) -> Dict:
         data = {
             "model": self.endpoint.model_id,
             "prompt": prompt,
             "stream": False,
         }
         if base64_data:
-            data["images"] = [base64_data] # Ollama expects a list
-        # Add optional parameters if needed, e.g., temperature
-        # Note: Ollama's /api/generate doesn't directly support temp/max_tokens in the same way as /api/chat
-        # If needed, model options can be set via Modelfile or other means.
-        # We can add common options here if supported by the specific Ollama version/setup.
-        # Example (check Ollama docs):
-        # data["options"] = {
-        # "temperature": self.endpoint.temperature,
-        # "num_predict": self.endpoint.max_tokens # num_predict is closer to max_tokens
-        # }
+            data["images"] = [base64_data]
         return data
+
 
 
 class LMJudge:
@@ -1443,6 +1269,17 @@ def format_summary_output(summary_data: Dict[str, Any]) -> str:
     else:
         output += "No judge metrics available.\n"
 
+    if "post_processing_analysis" in summary_data:
+        ngram_info = summary_data["post_processing_analysis"]["ngram_frequency"]
+        output += f"\n--- Post-Processing: Top {ngram_info['top_k_reported']} {ngram_info['n_value']}-grams ---\n"
+        for name, data in ngram_info.get("results_by_model", {}).items():
+            output += f" Model: {name}\n"
+            if not data["most_frequent"]:
+                output += "  - (No n-grams generated)\n"
+            else:
+                for item in data["most_frequent"]:
+                    output += f"  - '{item['ngram']}' (Count: {item['count']})\n"
+
     return output
 
 
@@ -1455,7 +1292,8 @@ def run_test_from_ui(
     model_prompt_template_input, # Prompts
     judge_prompt_template_input,
     test_data_file, test_data_text, # Test Data
-    batch_size_input, batch_retry_attempts_input, batch_backoff_factor_input, batch_max_wait_input, batch_retry_trigger_strings_input, # Params
+    batch_size_input, batch_retry_attempts_input, batch_backoff_factor_input, batch_max_wait_input, batch_retry_trigger_strings_input, # Test Params
+    enable_ngram_input, n_val_input, top_k_input, # Post-processing Params
     key_field_name_input, value_field_name_input, image_field_name_input, # Field Names
     progress=gr.Progress(track_tqdm=True)
 ):
@@ -1676,6 +1514,9 @@ def run_test_from_ui(
                     logger.error("Test run finished, but no final results structure was received.")
                     final_summary_output = "Test Execution Error: No final results generated."
 
+                elif final_results:
+                    # Run Post-Processing before formatting output
+                    final_results = run_post_processing_analysis(final_results, enable_ngram_input, int(n_val_input), int(top_k_input))
                 else: # Completed normally
                     logger.info("Test run completed normally.")
                     summary_data = final_results.get("summary", {})
@@ -1826,7 +1667,7 @@ def create_ui():
 
     # Default configurations (Example)
     default_configs = [
-        {"name": "Model 1 (LM Studio Gemma 3 12B)", "api_url": "http://localhost:1234/v1/chat/completions", "model_id": "gemma-3-12b-it", "temperature": 0.1, "max_tokens": 8192, "is_active": True},
+        {"name": "MiniCPM-o-2.6-Q4_K_M", "api_url": "http://localhost:8001/v1/chat/completions", "model_id": "openbmb/MiniCPM-o-2_6-gguf", "temperature": 0.1, "max_tokens": 8192, "is_active": True},
         {"name": "Model 2 (LM Studio Gemma 3 4B)", "api_url": "http://localhost:1234/v1/chat/completions", "model_id": "gemma-3-4b-it", "temperature": 0.1, "max_tokens": 8192, "is_active": True},
         {"name": "Model 3 (LM Studio Gemma 3 27B QAT)", "api_url": "http://localhost:1234/v1/chat/completions", "model_id": "gemma-3-27b-it-qat", "temperature": 0.1, "max_tokens": 8192, "is_active": False},
         {"name": "Model 4 (LM Studio Gemma 3 4B QAT)", "api_url": "http://localhost:1234/v1/chat/completions", "model_id": "gemma-3-4b-it-qat", "temperature": 0.1, "max_tokens": 8192, "is_active": False},
@@ -1907,6 +1748,12 @@ def create_ui():
                         batch_backoff_factor_input = gr.Slider(label="Backoff Factor", value=2.0, minimum=1.0, maximum=5.0, step=0.1)
                         batch_max_wait_input = gr.Number(label="Maximum Wait Time (s)", value=60, precision=0, minimum=1)
                         batch_retry_trigger_strings_input = gr.Textbox(label="Retry Trigger Strings (Comma-separated)", placeholder="e.g., rate limit,error,timeout")
+                with gr.Column(scale=1):
+                    gr.Markdown("### Post-Processing")
+                    with gr.Accordion("N-gram Analysis", open=False):
+                        enable_ngram_input = gr.Checkbox(label="Enable N-gram Frequency Analysis", value=True)
+                        n_val_input = gr.Slider(label="N-gram Size (n)", minimum=1, maximum=7, value=3, step=1)
+                        top_k_input = gr.Number(label="Top K N-grams to Report", value=10, precision=0)
 
             with gr.TabItem("Monitoring & Results"):
                 gr.Markdown("### Test Execution & Results")
@@ -1994,6 +1841,7 @@ def create_ui():
                 api_key_input, model_prompt_template_input, judge_prompt_template_input,
                 test_data_file, test_data_text,
                 batch_size_input, batch_retry_attempts_input, batch_backoff_factor_input, batch_max_wait_input, batch_retry_trigger_strings_input,
+                enable_ngram_input, n_val_input, top_k_input, # New n-gram parameters
                 key_field_name_input, value_field_name_input, image_field_name_input
             ],
             outputs=[
@@ -2029,6 +1877,11 @@ def create_ui():
 def run_cli_test():
     """Runs the N-way test from the command line with 3 models."""
     logger.info("Starting CLI execution of N-Way ModelTester...")
+    print("\n   MANUAL SETUP EXAMPLE (for MiniCPM-o-2.6):")
+    print("   1. Download the model (approx. 1.7 GB):")
+    print("      wget https://huggingface.co/openbmb/MiniCPM-o-2_6-gguf/resolve/main/minicpm-o-2_6-q4_k_m.gguf")
+    print("\n   2. Run the server in a separate terminal:")
+    print("      python -m llama_cpp.server --model ./minicpm-o-2_6-q4_k_m.gguf --port 8001 --n_gpu_layers -1")
 
     # --- Configuration ---
     try: from dotenv import load_dotenv; load_dotenv(); logger.info("Loaded .env if present.")
@@ -2042,7 +1895,13 @@ def run_cli_test():
     # Define 3 Model Endpoints
     endpoints = [
         ModelEndpoint(
-            name="M1_LMStudio_Gemma12B", api_url=LMSTUDIO_API_URL, api_key=None, model_id="gemma-3-12b-it", temperature=0.1, max_tokens=1000, is_active=True
+            name="MiniCPM-o-2.6-Q4_K_M",
+            api_url="http://localhost:8001/v1/chat/completions",
+            api_key=None,
+            model_id="openbmb/MiniCPM-o-2_6-gguf",
+            temperature=0.1,
+            max_tokens=1000,
+            is_active=True
         ),
         ModelEndpoint(
             name="M2_LMStudio_Gemma4B", api_url=LMSTUDIO_API_URL, api_key=None, model_id="gemma-3-4b-it", temperature=0.1, max_tokens=1000, is_active=True
@@ -2148,6 +2007,7 @@ def run_cli_test():
 # Main Execution Logic
 # ==============================================================================
 
+
 def main():
     """Main function to parse arguments and run either CLI or UI."""
     import argparse
@@ -2169,5 +2029,37 @@ def main():
         run_cli_test()
 
 if __name__ == "__main__":
-    if ensure_venv():
+    # This block runs first. It ensures the environment is set up and all
+    # dependencies are available before attempting to run the main application.
+    if ensure_environment_with_uv():
+        main()
+def main():
+    """Main function to parse arguments and run either CLI or UI."""
+    parser = argparse.ArgumentParser(description="N-Way Pairwise Model Testing Tool")
+    parser.add_argument("--ui", action="store_true", help="Launch the Gradio web UI.")
+    args = parser.parse_args()
+
+    def signal_handler(sig, frame):
+        global STOP_REQUESTED
+        if not STOP_REQUESTED:
+            print("\nCtrl+C detected. Requesting stop...")
+            logger.warning("Stop requested via Ctrl+C.")
+            STOP_REQUESTED = True
+        else:
+            print("\nCtrl+C detected again. Forcing exit.")
+            sys.exit(1)
+    
+    signal.signal(signal.SIGINT, signal_handler)
+
+    if args.ui:
+        logger.info("Launching Gradio UI...")
+        iface = create_ui()
+        iface.launch()
+    else:
+        run_cli_test()
+
+if __name__ == "__main__":
+    # This block runs first. It ensures the environment is set up and all
+    # dependencies are available before attempting to run the main application.
+    if ensure_environment_with_uv():
         main()
